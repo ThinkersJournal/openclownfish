@@ -23,7 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: has
-        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: fmt checked nothing"; fi
+        run: |
+          if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: fmt checked nothing"; fi
       - if: steps.has.outputs.present == 'true'
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -38,7 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: has
-        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: clippy checked nothing"; fi
+        run: |
+          if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: clippy checked nothing"; fi
       - if: steps.has.outputs.present == 'true'
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -58,7 +60,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: has
         shell: bash
-        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: test checked nothing"; fi
+        run: |
+          if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: test checked nothing"; fi
       - if: steps.has.outputs.present == 'true'
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -74,7 +77,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: has
-        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: doc checked nothing"; fi
+        run: |
+          if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: doc checked nothing"; fi
       - if: steps.has.outputs.present == 'true'
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -88,7 +92,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: has
-        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: deny checked nothing"; fi
+        run: |
+          if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: deny checked nothing"; fi
       - if: steps.has.outputs.present == 'true'
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
 
