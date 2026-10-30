@@ -11,8 +11,8 @@ Statuses: `open`, `doing`, `done`, `held`. Updated with every PR.
 | C2 | Loader hardening: no-OpenCL path tested on Linux CI, ICD vendor-file enumeration, more entry points (context, queue, buffer, program, kernel) | open |
 | H1 | Per-machine platform/device report (laptop done via `probe`; desktop rig and Linux open) | doing |
 | M1 | macOS: GitHub macOS runner exposes an OpenCL platform but `clGetDeviceIDs` returns -30 (`CL_INVALID_VALUE`), so no devices; measured in CI run 41113987171 (2026-10-30). macOS support is NOT claimed; revisit on real Apple hardware | open (finding) |
-| C3 | Safe layer part 1: `Context`, `Queue`, `Buffer` (bounds-checked blocking read/write, `finish`); round trip tested on every device here | doing (PR c3-safe-layer, 0.0.5 proposed) |
-| C4 | Safe layer part 2: `Program` (build log surfaced per device), `Kernel`, argument setting, NDRange launch, `Event` profiling | open |
+| C3 | Safe layer part 1: `Context`, `Queue`, `Buffer` (bounds-checked blocking read/write, `finish`); round trip tested on every device here | done (#6, 0.0.5) |
+| C4 | Safe layer part 2: `Program` (build log surfaced per device), `Kernel`, argument setting, NDRange launch, `Event` profiling; vector add checked on every device here | doing (PR c4-program-kernel, 0.0.6) |
 | X1 | OpenCL C parser into Unpopped's IR (contract: `Unpopped/docs/parser-emitter-ownership-map.md`, ROADMAP 6.7) | design note `docs/parser-emitter-design.md`; after X2 |
 | X2 | OpenCL C emitter from Unpopped's IR | design note written; next, after the safe layer |
 | F1 | Fuel OpenCL backend, designed with the Fuel lane (Fuel repo not edited here) | held; below Rockfish, Bonefish, Vulkane |
