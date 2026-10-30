@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# No Cargo.toml exists until the crate skeleton lands (survey first, see
+# docs/survey-and-design.md). Until then each job reports success after
+# printing that it checked nothing; the `has` step and the `if:` guards are
+# removed in the skeleton PR (ROADMAP row C1).
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: has
+        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: fmt checked nothing"; fi
+      - if: steps.has.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+      - if: steps.has.outputs.present == 'true'
+        run: cargo fmt --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: has
+        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: clippy checked nothing"; fi
+      - if: steps.has.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - if: steps.has.outputs.present == 'true'
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: has
+        shell: bash
+        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: test checked nothing"; fi
+      - if: steps.has.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - if: steps.has.outputs.present == 'true'
+        run: cargo test --all-features --no-fail-fast
+
+  doc:
+    name: doc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: has
+        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: doc checked nothing"; fi
+      - if: steps.has.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - if: steps.has.outputs.present == 'true'
+        run: cargo doc --no-deps --all-features
+
+  deny:
+    name: cargo deny (advisories, licences, bans, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: has
+        run: if [ -f Cargo.toml ]; then echo present=true >> "$GITHUB_OUTPUT"; else echo "no Cargo.toml: deny checked nothing"; fi
+      - if: steps.has.outputs.present == 'true'
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+
+  # Advisory only (CireSnave 2026-10-23): not a required check.
+  portfolio:
+    permissions:
+      contents: read
+    uses: ciresnave/coderipper/.github/workflows/portfolio.yml@30e012b7d400b10d88c1e294bd485e49975afc1e
