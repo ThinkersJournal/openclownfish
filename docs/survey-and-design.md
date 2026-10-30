@@ -16,7 +16,7 @@ Status: draft for the PM's gate. No code. Measured 2026-10-30 on `TUF-LAPTOP` (W
 
 The first three share one author (kenba) and one release cadence, and are actively maintained. Downloads (all-time): `cl3` 785k, `opencl3` 758k, `ocl` 477k.
 
-**Not verified here:** whether `opencl-sys`'s `dynamic` path fails gracefully when no ICD loader is installed; each crate's unsafe surface and soundness; extension coverage beyond the feature list above. These need a code read, not a metadata read.
+**Not verified here:** whether `cl3`'s `dlopen2` loader fails gracefully when no ICD loader is installed (`opencl-sys` itself has no loader, see section 4); each crate's unsafe surface and soundness; extension coverage beyond the feature list above. These need a code read, not a metadata read.
 
 **Parsers/emitters:** a crates.io search (queries "opencl c parser", "opencl kernel", "opencl") found no Rust OpenCL C parser or emitter. Control: the same searches find `ocl-include`, `opencl3`, `rlxsl` (an emitter crate for another project), so the queries do reach relevant crates. Absence of a dedicated crate is therefore likely but not proven (crates.io search is name/description based).
 
@@ -38,11 +38,23 @@ So the premise holds on this machine: OpenCL is a real runtime API across three 
 - **B. Depend on `opencl-sys` only; write our own safe layer.** The FFI layer is the large, mechanical, header-derived part and is kept current by someone else; we own the API design, error model and the stack-probing behaviour we need. Medium effort. Keeps `openclownfish-sys` as a thin re-export or empty reserved crate, which wastes one of the two reserved names.
 - **C. Generate our own bindings** (`openclownfish-sys`) from the Khronos headers, loading `libOpenCL.so` / `OpenCL.dll` at runtime ourselves. Most control, including tolerant loading (missing symbols are `None`, not link failures) and per-ICD-platform dispatch, which a conformance/limits tool wants. Largest effort; we then carry the header-tracking burden, and must keep the Khronos headers' licence (Apache-2.0) and credit.
 
-## 4. Recommendation (for ruling; not decided)
+## 4. Ruling and the currency check on `opencl-sys`
 
-Start with **B for `openclownfish`'s first milestone, with the seam shaped so C is possible**: write the safe layer against a small internal trait of the C entry points. Reason: the immediate deliverables (parser/emitter, Fuel backend) need a working safe API soon, and `opencl-sys` is current; the stack-limits goal is what justifies owning the safe layer. Revisit C if `opencl-sys`'s dynamic loading cannot tolerate missing symbols (the unverified point in section 1), because then `openclownfish-sys` earns its name.
+Ruling (PM, 2026-10-30): **B**, own safe layer over `opencl-sys`, conditional on this lane's check that `opencl-sys` is current, tracks the OpenCL 3.0 headers, loads dynamically with no OpenCL install at build time, has an acceptable licence and is maintained; else C.
 
-Decision needed: B vs C vs A (PM/CireSnave). Prior to that I will read `opencl-sys`'s dynamic loader and the `cl3` error model (cost: small) so the ruling rests on a code read.
+Check, `opencl-sys` 0.6.5 (crates.io tarball, read 2026-10-30):
+
+| Condition | Result | Evidence |
+|---|---|---|
+| Latest version | yes, 0.6.5 is `max_version`, released 2026-10-18 | crates.io API |
+| Tracks the headers | yes, "up to date with OpenCL-Headers tag v2026.05.29", adds OpenCL 3.1 headers (0.6.3), 0.6.4 incorporates later header changes | `RELEASES.md` |
+| Licence | Apache-2.0 | `Cargo.toml` |
+| Maintained | 3 releases in the 10 days to 2026-10-18; repo pushed 2026-10-18 | `RELEASES.md`, GitHub API |
+| Dynamic loading, no OpenCL at build time | **Not provided by `opencl-sys`.** It has no loader. Its only function declarations are an `extern` block gated on `feature = "static"` carrying `#[link(name = "OpenCL")]` (`src/cl.rs:995-1000`); without `static` it ships types, constants and 230 `pub type` function-pointer aliases (`src/cl_function_types.rs`, e.g. `clGetPlatformIDs_t = Option<unsafe extern "C" fn(..)>`). Its only dependency is `libc`. The loader lives in `cl3` (`dlopen2`). | source read; a scratch crate depending on `opencl-sys` 0.6.5 without `static` builds and runs, and its binary contains no `OpenCL.dll` string (that box does have OpenCL installed, so the cfg gate is the real evidence, not the run) |
+
+Consequence: **B holds, with a stated shape.** `openclownfish-sys` is *not* empty: it is our own runtime loader (`libOpenCL.so` / `OpenCL.dll`, Linux and Windows, missing symbols as `None`) that fills the `opencl-sys` `*_t` function-pointer types. We take types, constants and signatures from `opencl-sys` (header-tracked by someone else) and own loading and the safe API. This is the cheap half of C. Choice of loader crate (`dlopen2`, as `cl3` uses, or `libloading`) is open; neither was evaluated beyond that. The `*_t` option wrapping already models "symbol absent".
+
+Not checked: `opencl-sys`'s MSRV (none declared in `Cargo.toml`; edition 2024 implies Rust 1.85 or later), and whether every extension we want has a `*_t` alias.
 
 ## 5. Parser and emitter (design sketch, no code)
 
@@ -56,8 +68,7 @@ Contract: Unpopped holds neither (`Unpopped/docs/parser-emitter-ownership-map.md
 
 Designed with the Fuel lane; this repo does not edit Fuel. Lowest priority behind Rockfish, Bonefish and Vulkane. Prerequisite: sections 3 and 5 settled. Nothing else to say until then.
 
-## 7. Plan after ruling
+## 7. Plan
 
 1. Land D0/D1 (this PR); PM enables branch protection (P0).
-2. Read `opencl-sys` dynamic loading and error model; amend section 4.
-3. C1 skeleton per the ruling; H1 desktop and Linux measurements.
+2. C1 skeleton per the ruling; H1 desktop and Linux measurements.
