@@ -4,6 +4,7 @@ use openclownfish::{Error, Runtime};
 fn main() -> Result<(), Error> {
     let rt = Runtime::load()?;
     println!("library: {}", rt.library());
+    println!("missing entry points: {:?}", rt.missing_entry_points());
     for p in rt.platforms()? {
         println!(
             "platform: {} | {} | {}",

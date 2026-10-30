@@ -84,7 +84,13 @@ impl Runtime {
         Ok(Self(Arc::new(OpenCl::load()?)))
     }
 
-    /// Name of the library that was opened.
+    /// Entry points the opened library does not export.
+    #[must_use]
+    pub fn missing_entry_points(&self) -> Vec<&'static str> {
+        self.0.missing_entry_points()
+    }
+
+    /// Name of the OpenCL library that was opened.
     pub fn library(&self) -> &str {
         &self.0.library
     }
