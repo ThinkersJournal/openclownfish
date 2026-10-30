@@ -1,0 +1,15 @@
+[package]
+name = "openclownfish-sys"
+description = "Runtime loader for the OpenCL ICD library (libOpenCL / OpenCL.dll); no OpenCL install needed to build."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["opencl", "gpu", "ffi", "loader"]
+categories = ["api-bindings", "external-ffi-bindings"]
+
+[dependencies]
+opencl-sys.workspace = true
+libloading.workspace = true
+thiserror.workspace = true

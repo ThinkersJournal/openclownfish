@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["crates/openclownfish-sys", "crates/openclownfish"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ThinkersJournal/openclownfish"
+authors = ["Eric Evans"]
+
+[workspace.dependencies]
+opencl-sys = "0.6.5"
+libloading = "0.9"
+thiserror = "2"
+openclownfish-sys = { version = "0.0.1", path = "crates/openclownfish-sys" }
