@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.5
+
+- Safe layer part 1: Context, Queue, Buffer with bounds-checked blocking read/write (C3). Design note records the Unpopped lane's answers.
+
 ## 0.0.4
 
 - Docs: OpenCL C parser/emitter design note (X1/X2); ROADMAP rows updated.
