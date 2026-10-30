@@ -36,8 +36,8 @@ crates.io, never the reverse and never by path.
 - **Residue (refused, never approximated):** `barrier`, `mem_fence`, `atomic_*`, `__local` buffers,
   `work_group_*` built-ins, `async_work_group_copy`, pipes, images/samplers, device-side enqueue,
   `printf`, `#pragma`. Each is a typed refusal naming the construct.
-- **Index mapping:** `get_global_id(0)` is the elementwise index. Other dimensions, `get_local_id`,
-  `get_group_id` and `get_global_size` are residue until the IR has a place for them.
+- **Index mapping:** `get_global_id(d)` maps to `Coord(d)` (section 6, answer 2). `get_local_id`,
+  `get_group_id`, `get_local_size` and `get_num_groups` are residue until the IR has a work-group model.
 - **Vector types** (`float4`, `int2`): refused in 0.x; the IR is scalar-element.
 
 ## 4. Emitter (X2)
@@ -62,10 +62,16 @@ crates.io, never the reverse and never by path.
    the goal of finding where each vendor's compiler differs.
 3. X1 second: a grammar spike with the frontend above, then lifts over a corpus.
 
-## 6. Questions for the Unpopped lane
+## 6. Answers from the Unpopped lane (2026-10-30, read at their 5500fd1)
 
-1. Is `convert::Frontend` the committed parse seam, with `FrontendRegistry` only a convenience?
-2. Does the IR carry multi-dimensional index (`get_global_id(1)`), or only a flat index?
-3. Is `lower_kernel(&KernelFn)` the preferred emit path over `lower(&KernelPlan)` for new backends?
-4. Is the `convert` feature expected to stay opt-in, and does it pull `tree-sitter-slang` for us?
-   (It does today: the feature lists both grammars.)
+1. `Frontend` + `Frontend::new` + `lift_*_with` is the parse seam and stays public under semver.
+   `FrontendRegistry` does not exist at 5500fd1 (it was a proposal); this note does not need it.
+2. The intent layer is multi-dimensional: `ScalarExpr::Coord(axis)` is an output coordinate along
+   `axis < rank`, so `get_global_id(d)` maps to `Coord(d)` for elementwise N-D kernels. There is no
+   thread-id or work-group model (no local/group id, barriers, wave ops; IR-union U4, not landed), so
+   `get_local_id`, `get_group_id` and friends stay residue. Section 3's "dim>0 is residue" is
+   therefore wrong: dimensions above 0 are accepted when the kernel is elementwise.
+3. `lower_kernel(&KernelFn)` is the recommended direction but is defaulted and so far proven only in
+   `unpopped-cpu-c`; `lower` is not deprecated. X2 starts on `lower(&KernelPlan)`.
+4. `convert` pulls `tree-sitter` + `tree-sitter-slang` until `vulkane-slang-parse` is published, then
+   `tree-sitter` only. Timing is unscheduled and not to be depended on.

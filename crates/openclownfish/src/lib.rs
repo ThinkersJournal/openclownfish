@@ -3,6 +3,10 @@
 //! Start with [`Runtime::load`], then [`Runtime::platforms`] and
 //! [`Platform::devices`]. Nothing here needs an OpenCL install to build.
 
+mod context;
+
+pub use context::{Buffer, Context, Queue};
+
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -33,6 +37,16 @@ pub enum Error {
         call: &'static str,
         /// Raw `cl_int` status.
         code: cl_int,
+    },
+    /// A buffer range does not fit the buffer; no driver call was made.
+    #[error("range {offset}..{offset}+{len} does not fit a buffer of {size} bytes")]
+    OutOfBounds {
+        /// Requested byte offset.
+        offset: usize,
+        /// Requested byte length.
+        len: usize,
+        /// Buffer size in bytes.
+        size: usize,
     },
 }
 
@@ -270,6 +284,42 @@ mod tests {
         assert_eq!(text(b"abc\0def"), "abc");
         assert_eq!(text(b"abc"), "abc");
         assert_eq!(text(b""), "");
+    }
+
+    /// Write then read back through every device that works; a stack that
+    /// cannot make a context is skipped, not failed (this is a measurement
+    /// tool: the probe reports such stacks).
+    #[test]
+    fn buffer_round_trip_and_bounds() {
+        let Ok(rt) = Runtime::load() else { return };
+        let Ok(platforms) = rt.platforms() else {
+            return;
+        };
+        let mut ran = 0;
+        for p in platforms {
+            let Ok(devices) = p.devices() else { continue };
+            for d in devices {
+                let Ok(ctx) = Context::new(&d) else { continue };
+                let Ok(queue) = ctx.create_queue() else {
+                    continue;
+                };
+                let Ok(buf) = ctx.create_buffer(16) else {
+                    continue;
+                };
+                let data: Vec<u8> = (0..16).collect();
+                queue.write_buffer(&buf, 0, &data).unwrap();
+                let mut out = [0u8; 16];
+                queue.read_buffer(&buf, 0, &mut out).unwrap();
+                queue.finish().unwrap();
+                assert_eq!(&out[..], &data[..], "device {:?}", d.name());
+                assert!(matches!(
+                    queue.write_buffer(&buf, 8, &data),
+                    Err(Error::OutOfBounds { .. })
+                ));
+                ran += 1;
+            }
+        }
+        eprintln!("buffer round trip ran on {ran} device(s)");
     }
 
     /// Passes with or without an OpenCL install, and when a vendor stack

@@ -5,12 +5,12 @@ You own **OpenCLownfish**: safe Rust OpenCL interface, OpenCL C parser+emitter f
 CireSnave goal (2026-10-30, verbatim): *"so we can really test the limits of every manufacturer's software stack."* Do NOT claim macOS support (row M1).
 
 ## State at 2026-10-30
-- main 8023d87 = 0.0.3: loader with 46 entry points + `missing_entry_points()` (C2, #4); M1 docs (#3).
-- Open: PR for branch `x-design` (worktree `C:\Projects\openclownfish-wt-x-design`): parser/emitter design note + 0.0.4 bump (my proposal; the PM may renumber). After merge: remove worktree, delete branch via API (CLAUDE.md section 3).
+- main 5dd286d = 0.0.4: loader with 46 entry points (C2), M1 docs, parser/emitter design note (X1/X2). The Unpopped lane answered the 4 design questions (design note section 6).
+- Open: PR for branch `c3-safe-layer` (worktree `C:\Projects\openclownfish-wt-c3`): Context/Queue/Buffer (C3), 0.0.5 proposed. After merge: remove worktree, delete branch via API (CLAUDE.md section 3).
 
 ## Next (unblocked, start without asking)
-1. Safe layer rows (context, queue, buffer, program with build log, kernel, event) on the C2 entry points; see ROADMAP.
-2. Send the design note's section 6 questions to the Unpopped lane (cwd `C:\Projects\Unpopped`; `list_peers`), then X2 emitter, then X1 parser.
+1. **C4** safe layer part 2: Program (per-device build log surfaced), Kernel, arg setting, NDRange launch, Event profiling. Needs only the C2 entry points.
+2. **X2** emitter on `lower(&KernelPlan)` (design note section 4), once C4 can build and run emitted source.
 3. H1 measurements on the desktop rig (RTX 4060, Radeon VII, Arc A770, Tesla P40) and Linux (PoCL, rusticl) via `cargo run --example probe`: needs the PM/CireSnave (board 329). Laptop done.
 
 ## Rules that bite here
