@@ -1,19 +1,17 @@
-# OpenCLownfish lane HANDOFF (new lane, created 2026-10-30 by the PM)
+# OpenCLownfish lane HANDOFF (rewritten 2026-10-30)
 
-You own **OpenCLownfish**: a comprehensive Rust interface to OpenCL, with the OpenCL C parser and emitter for Unpopped and, eventually, a Fuel backend. Crates reserved on crates.io at 0.0.0: `openclownfish`, `openclownfish-sys` (owner ciresnave). Repo: ThinkersJournal/openclownfish (this checkout, `C:\Projects\openclownfish`).
+You own **OpenCLownfish**: safe Rust OpenCL interface, OpenCL C parser+emitter for Unpopped, later a Fuel backend. Crates reserved on crates.io at 0.0.0 (`openclownfish`, `openclownfish-sys`); the PM allocates every version at gate time. Repo ThinkersJournal/openclownfish. Read `ROADMAP.md`, `docs/survey-and-design.md` (ruling B: own safe layer over `opencl-sys` types + our own runtime loader) and `docs/parser-emitter-design.md`.
 
-CireSnave, 2026-10-30, verbatim: *"We need an OpenCL crate and lane to create the parser and emitter for OpenCL and eventually create the backend for Fuel for OpenCL."* *"Rather than Clownfish, what about OpenCLownfish?"* (name taken). His goal: *"so we can really test the limits of every manufacturer's software stack."* OpenCL is a real runtime API with NVIDIA, AMD and Intel drivers and CPU implementations (e.g. PoCL); it is one more route to test each vendor's stack. **Verify that on this hardware; do not assume.**
+CireSnave goal (2026-10-30, verbatim): *"so we can really test the limits of every manufacturer's software stack."* Do NOT claim macOS support (row M1).
 
-## Scope
-- Survey existing Rust OpenCL crates (opencl3, cl3, ocl and others): licence, activity, coverage, safety; recommend depend / generate our own bindings / own safe layer (options first). Load libOpenCL / OpenCL.dll at runtime, Linux AND Windows.
-- Parser + emitter for OpenCL C on Unpopped's contract (read `C:\Projects\Unpopped\docs\parser-emitter-ownership-map.md`, ROADMAP 6.7). Unpopped holds neither.
-- Later: the OpenCL backend for Fuel (`C:\Projects\fuel`); design with the Fuel lane; do not edit its repo. Priority is below Rockfish, Bonefish and Vulkane: start with survey + design + the crate skeleton.
-- Hardware: the laptop has an NVIDIA RTX 4070 and an AMD GPU; the desktop rig (dual boot) has RTX 4060, Radeon VII, Arc A770, Tesla P40 (a second P40 and a MI50 on order). Report which OpenCL platforms each machine exposes, measured.
+## State at 2026-10-30
+- main 8023d87 = 0.0.3: loader with 46 entry points + `missing_entry_points()` (C2, #4); M1 docs (#3).
+- Open: PR for branch `x-design` (worktree `C:\Projects\openclownfish-wt-x-design`): parser/emitter design note + 0.0.4 bump (my proposal; the PM may renumber). After merge: remove worktree, delete branch via API (CLAUDE.md section 3).
 
-(see COMMON rules below)
+## Next (unblocked, start without asking)
+1. Safe layer rows (context, queue, buffer, program with build log, kernel, event) on the C2 entry points; see ROADMAP.
+2. Send the design note's section 6 questions to the Unpopped lane (cwd `C:\Projects\Unpopped`; `list_peers`), then X2 emitter, then X1 parser.
+3. H1 measurements on the desktop rig (RTX 4060, Radeon VII, Arc A770, Tesla P40) and Linux (PoCL, rusticl) via `cargo run --example probe`: needs the PM/CireSnave (board 329). Laptop done.
+
 ## Rules that bite here
-Read `C:\Projects\CLAUDE.md` (loaded) and `C:\Projects\AGENT-ONBOARDING.md` once. Work in a worktree (`C:\Projects\<repo>-wt-<topic>`), never branch in the primary checkout. Version bump on every pushed change (pre-1.0 breaking = the SECOND number); the PM allocates the number at gate time. crates.io versions only, no path or git dependencies; all dependencies on their latest versions. Trace and verify every third-party file against its origin and keep its licence and credit (CireSnave: "I am not a plageurist"). Every claim verified on the forge or by measurement; every absence needs a positive control. Compact `[READY]`/`[STATUS]` messages, short. Peers change ID on every restart: `list_peers`, match on cwd. Restart at task boundaries (HANDOFF rewrite, `lane-restart assert-idle` last, then `--self`). This is an open-source project from day one: no secrets, no private paths in committed files.
-
-## First deliverables (all lanes of this family)
-0. `ROADMAP.md` with rows and statuses; a CI workflow (fmt, clippy, tests, cargo-deny, and the portfolio checks workflow the other repos use: copy the shape from `C:\Projects\capant\.github`) in your first PR; then `[ASK]` the PM to enable branch protection requiring those checks (CI and protection everywhere).
-1. A survey and design note (options first, recommendation, no code) before any crate code.
+`C:\Projects\CLAUDE.md` applies. Worktree per branch, never branch in the primary. Never merge, publish or allocate versions; `[READY]` to the PM (cwd `C:\Projects`; peer IDs rotate, use `list_peers`). A PR without a version line is refused at the gate: bump workspace Cargo.toml, Cargo.lock, CHANGELOG.md and verify each applied. Pin sonnet on any subagent. No secrets or private paths in committed files. Use Write for source files with odd quoting.

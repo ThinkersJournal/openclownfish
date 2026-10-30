@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "openclownfish"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "openclownfish-sys",
  "thiserror",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "openclownfish-sys"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "libloading",
  "opencl-sys",
