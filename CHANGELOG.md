@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.4
+
+- Docs: OpenCL C parser/emitter design note (X1/X2); ROADMAP rows updated.
+
 ## 0.0.3
 
 - Loader resolves 46 OpenCL entry points; Runtime::missing_entry_points() and probe report what a driver lacks (C2).
