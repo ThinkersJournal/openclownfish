@@ -38,6 +38,11 @@ fn input_buffer(dtype: ElementKind) -> TypedBuffer {
             let v: Vec<i32> = (0..n).map(|i| cyc[i % cyc.len()]).collect();
             TypedBuffer::from_i32(&SHAPE, &v)
         }
+        ElementKind::F64 => {
+            let cyc = [1.0f64, 2.0, 0.5, -1.0, 0.25, -2.0, 1.5];
+            let v: Vec<f64> = (0..n).map(|i| cyc[i % cyc.len()]).collect();
+            TypedBuffer::from_f64(&SHAPE, &v)
+        }
         _ => {
             let cyc = [i64::MAX, 1, -1, 2, 7, -7, i64::MIN, 3, 1 << 40];
             let v: Vec<i64> = (0..n).map(|i| cyc[i % cyc.len()]).collect();
@@ -65,8 +70,13 @@ fn cases() -> Vec<Case> {
         (&[0, 1], true),
         (&[0, 1, 2], true),
     ];
-    for dtype in [ElementKind::F32, ElementKind::I32, ElementKind::I64] {
-        let ops: &[ReduceOp] = if dtype == ElementKind::F32 {
+    for dtype in [
+        ElementKind::F32,
+        ElementKind::F64,
+        ElementKind::I32,
+        ElementKind::I64,
+    ] {
+        let ops: &[ReduceOp] = if matches!(dtype, ElementKind::F32 | ElementKind::F64) {
             &[
                 ReduceOp::Sum,
                 ReduceOp::Max,
@@ -80,7 +90,10 @@ fn cases() -> Vec<Case> {
         for &op in ops {
             for (axes, keepdim) in axis_sets {
                 // Products over many elements leave f32 exactness; fold few.
-                if dtype == ElementKind::F32 && op == ReduceOp::Prod && axes.len() > 1 {
+                if matches!(dtype, ElementKind::F32 | ElementKind::F64)
+                    && op == ReduceOp::Prod
+                    && axes.len() > 1
+                {
                     continue;
                 }
                 v.push(Case {
@@ -105,7 +118,6 @@ fn reductions_agree_with_the_oracle_on_every_device() {
     let Ok(platforms) = rt.platforms() else {
         return;
     };
-    let backend = OpenClC::new();
     let mut ran = 0;
     for p in platforms {
         let Ok(devices) = p.devices() else { continue };
@@ -115,10 +127,18 @@ fn reductions_agree_with_the_oracle_on_every_device() {
                 p.name().unwrap_or_default(),
                 d.name().unwrap_or_default()
             );
+            let Ok(exts) = d.extensions() else { continue };
+            let has_fp64 = exts.iter().any(|e| e == "cl_khr_fp64");
+            let backend = OpenClC::for_extensions(exts.iter().map(String::as_str));
             let Ok(ctx) = Context::new(&d) else { continue };
             let queue = ctx.create_queue().unwrap();
             let all = cases();
+            let mut done = 0;
             for c in &all {
+                if c.dtype == ElementKind::F64 && !has_fp64 {
+                    continue;
+                }
+                done += 1;
                 let rank = SHAPE.len();
                 let mut mask = AxisMask::EMPTY;
                 for &a in &c.axes {
@@ -150,7 +170,11 @@ fn reductions_agree_with_the_oracle_on_every_device() {
                     ),
                 };
                 let mut k = prog.kernel(&kernel.name).unwrap();
-                let w = if c.dtype == ElementKind::I64 { 8 } else { 4 };
+                let w = if matches!(c.dtype, ElementKind::I64 | ElementKind::F64) {
+                    8
+                } else {
+                    4
+                };
                 let n_out: i64 = out_shape.iter().product();
                 let inb = ctx.create_buffer(inp.bytes.len()).unwrap();
                 queue.write_buffer(&inb, 0, &inp.bytes).unwrap();
@@ -188,20 +212,28 @@ fn reductions_agree_with_the_oracle_on_every_device() {
                 let want = &want[..n_out as usize * w];
                 if c.op == ReduceOp::Mean {
                     // f32 division vs f64 division rounded to f32: allow 1 ulp.
-                    for (g, wnt) in got.chunks(4).zip(want.chunks(4)) {
-                        let g = f32::from_le_bytes(g.try_into().unwrap());
-                        let wnt = f32::from_le_bytes(wnt.try_into().unwrap());
-                        assert!(
-                            (i64::from(g.to_bits()) - i64::from(wnt.to_bits())).abs() <= 1,
-                            "{label}: {}: kernel {g}, oracle {wnt}",
-                            name(c)
-                        );
+                    // f64 divides in f64 on both sides: exact.
+                    if c.dtype == ElementKind::F64 {
+                        assert_eq!(got, want, "{label}: {}", name(c));
+                    } else {
+                        for (g, wnt) in got.chunks(4).zip(want.chunks(4)) {
+                            let g = f32::from_le_bytes(g.try_into().unwrap());
+                            let wnt = f32::from_le_bytes(wnt.try_into().unwrap());
+                            assert!(
+                                (i64::from(g.to_bits()) - i64::from(wnt.to_bits())).abs() <= 1,
+                                "{label}: {}: kernel {g}, oracle {wnt}",
+                                name(c)
+                            );
+                        }
                     }
                 } else {
                     assert_eq!(got, want, "{label}: {}\n{}", name(c), kernel.source);
                 }
             }
-            eprintln!("{label}: {} reduction cases agree", all.len());
+            eprintln!(
+                "{label}: {done} of {} reduction cases agree (fp64: {has_fp64})",
+                all.len()
+            );
             ran += 1;
         }
     }
