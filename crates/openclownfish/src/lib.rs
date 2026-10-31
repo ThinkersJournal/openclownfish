@@ -7,6 +7,7 @@ mod context;
 mod program;
 
 pub use context::{Buffer, Context, Queue};
+pub use openclownfish_sys::icd;
 pub use program::{Event, Kernel, Program};
 
 use std::ffi::c_void;
