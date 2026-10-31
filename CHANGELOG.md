@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.28
+
+- Emitter: reductions with a fused post-expression are served, by the serial kernel and the `blockreduce` variant alike. The post reads the finalized fold (after `Mean`'s division) as `Reduced(0)`, may use constants, and is spelled in the element type (`norm2 = sqrt(sum(x*x))`, scale-and-offset, integer `red*red`). An input in a post is refused (Unpopped's plan gate rejects it first). 144 cases per device (serial and block sizes 8 and 32, f32/f64/i32/i64, two shapes, four axis sets) agree with the oracle on all 3 laptop devices; posts that round (`sqrt`, `Mean`) are compared within 4 ulp, the rest bit for bit (X2).
+
 ## 0.0.27
 
 - Emitter: `OpenClC::lower_variants` also offers a `blockreduce` variant of every reduction the serial emitter serves: one work-group per output element (global = `n_out * B`, local = `B`, `-D OCF_BLOCK=n`, default 64). Each work item folds a contiguous chunk of the row-major reduced extent, then a neighbour-pair tree in `__local` memory combines the chunks in order, so Max/Min keep the serial fold's tie and NaN rule. Float Sum/Mean/Prod are `DeterministicallyDivergent`; Max/Min and integer reductions are `BitIdentical`. An empty reduced extent returns the serial seed. 170 oracle cases per device at block sizes 8 and 32, a NaN/signed-zero Max/Min bit-comparison against the serial kernel, and the empty-extent case agree on all 3 laptop devices (X2).
