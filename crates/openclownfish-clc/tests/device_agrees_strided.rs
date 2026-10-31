@@ -246,7 +246,8 @@ fn strided_plans_with_views_or_offsets_are_refused() {
     let plan = build_plan(&op, &key);
     // The plain strided plan is served.
     assert!(OpenClC::new().lower(&plan).is_ok());
-    // Reductions are another schedule entirely.
+    // Reductions are another schedule, served by the reduction emitter (see
+    // device_agrees_reduce.rs); the strided check is about views, not folds.
     let ro = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256);
     let rd = OperandDesc::new(2, &shape, &row_major(&shape), ElementKind::F32, 256);
     let rkey = structure_key(OpCategory::Reduction, &[rd, ro], ArchSku::Sm89);
@@ -258,9 +259,5 @@ fn strided_plans_with_views_or_offsets_are_refused() {
         unpopped::ir::ReduceOp::Sum,
     );
     let rplan = build_plan(&rop, &rkey);
-    assert!(
-        OpenClC::new().lower(&rplan).is_err(),
-        "{:?}",
-        rplan.schedule
-    );
+    assert!(OpenClC::new().lower(&rplan).is_ok(), "{:?}", rplan.schedule);
 }
