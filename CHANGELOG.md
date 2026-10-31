@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.15
+
+- Emitter: i32/i64 wrapping + - *, bitwise and shift operators, bit-exact on every device (X2).
+
 ## 0.0.14
 
 - Emitter: strided schedule (transposed, broadcast, rank-3, Coord) in Baracuda's argument convention, bit-exact on every device (X2).
