@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/openclownfish-sys", "crates/openclownfish", "crates/openclownfish-clc"]
 
 [workspace.package]
-version = "0.0.25"
+version = "0.0.26"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ThinkersJournal/openclownfish"
@@ -13,5 +13,5 @@ authors = ["Eric Evans"]
 opencl-sys = "0.6.5"
 libloading = "0.9"
 thiserror = "2"
-openclownfish-sys = { version = "0.0.25", path = "crates/openclownfish-sys" }
-openclownfish = { version = "0.0.25", path = "crates/openclownfish" }
+openclownfish-sys = { version = "0.0.26", path = "crates/openclownfish-sys" }
+openclownfish = { version = "0.0.26", path = "crates/openclownfish" }

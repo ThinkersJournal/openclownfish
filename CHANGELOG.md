@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.26
+
+- Deps: unpopped and unpopped-vocab 0.38.4. Workspace tests, including every device differential on the 3 laptop devices, pass unchanged.
+
 ## 0.0.25
 
 - Deps: unpopped and unpopped-vocab 0.38.3.
