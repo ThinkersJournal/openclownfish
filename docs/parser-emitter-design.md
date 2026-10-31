@@ -178,3 +178,18 @@ add, each at 5x7 and 16x16, and a rank-3 case with a mid-axis broadcast) are bit
 on all three laptop devices; each asserts the plan really got `Schedule::Strided`. Input buffers are
 storage images laid out by their strides and the oracle reads them the same way. Windows 11 laptop booted;
 rig and Linux UNVERIFIED.
+
+### Integers (emitter 0.0.15)
+
+`i32` and `i64` plans are served for exactly what the IR admits at an integer dtype: wrapping `+ - *`, and
+`& | ^ << >>`. Unpopped's plan gate rejects the rest at integer dtypes (division, unary ops, Max/Min,
+comparisons, Select, `ConstInt`), and the emitter refuses them too instead of offering more than the
+reference does. Signed overflow is undefined in C, so `+ - *` and `<<` are computed in the unsigned type of
+the same width and converted back, which wraps on every compiler; `>>` is the arithmetic shift on signed
+types.
+
+`tests/device_agrees_int.rs`: 8 operators x {i32, i64} x {n=257, n=256}, over a pool of the awkward values
+(MAX, MIN, -1, 0, 1, 2, large products that overflow, with every pairing present) and shift amounts in
+`0..bits`, compared byte for byte with the oracle: 96 runs, all bit-exact on all three laptop devices.
+Shift amounts outside `0..bits` are the caller's to avoid, as in the IR contract, and are not tested.
+Windows 11 laptop booted; rig and Linux UNVERIFIED.

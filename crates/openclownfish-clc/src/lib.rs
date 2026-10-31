@@ -9,6 +9,9 @@
 //! comparisons (1.0 or 0.0) and `Select`. Everything else is a typed refusal,
 //! never an approximation.
 //!
+//! `i32` and `i64` plans are served for the subset the IR allows on integers:
+//! wrapping `+ - *` and the bitwise and shift operators.
+//!
 //! Whether `f64` may be emitted is the caller's to say, from the target device's
 //! extension list: [`OpenClC::for_extensions`]. A plan carries no device, so the
 //! backend does.
@@ -61,17 +64,40 @@ struct Ty {
     suffix: &'static str,
     /// Used in the kernel name.
     tag: &'static str,
+    /// An integer type: arithmetic wraps and the operator set is different.
+    int: bool,
+    /// The unsigned type of the same width, through which integer `+ - *` and
+    /// `<<` are computed so overflow wraps instead of being undefined.
+    uns: &'static str,
 }
 
 const F32: Ty = Ty {
     c: "float",
     suffix: "f",
     tag: "f32",
+    int: false,
+    uns: "",
 };
 const F64: Ty = Ty {
     c: "double",
     suffix: "",
     tag: "f64",
+    int: false,
+    uns: "",
+};
+const I32: Ty = Ty {
+    c: "int",
+    suffix: "",
+    tag: "i32",
+    int: true,
+    uns: "uint",
+};
+const I64: Ty = Ty {
+    c: "long",
+    suffix: "L",
+    tag: "i64",
+    int: true,
+    uns: "ulong",
 };
 
 fn refuse(detail: impl Into<String>) -> LowerError {
@@ -96,17 +122,71 @@ struct StridedCx {
     fully_bcast: Vec<bool>,
 }
 
+/// How input `i` is read: by linear index, through its strided offset, or from
+/// the value hoisted out of the loop when every axis is broadcast.
+fn input_leaf(i: u8, cx: Cx<'_>) -> String {
+    match cx.strided {
+        None => format!("in{i}[i]"),
+        Some(st) if st.fully_bcast[usize::from(i)] => format!("h{i}"),
+        Some(_) => format!("in{i}[o{i}]"),
+    }
+}
+
+/// The integer subset the IR admits (`ir.rs` op x dtype table): `+ - *` that
+/// wrap, and bitwise and shift operators. Division, unary and comparison
+/// operators are not legal on integers there, and `Select` and integer
+/// constants (`ConstInt`) have no integer lowering in v1 (the plan gate says
+/// so), so they are refused here too.
+///
+/// Signed overflow is undefined in C, so `+ - *` and `<<` are computed in the
+/// unsigned type of the same width and converted back, which wraps on every
+/// compiler. Shift amounts outside `0..bits` are the caller's to avoid, as in
+/// the IR contract.
+fn int_expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
+    let (t, n_inputs) = (cx.t, cx.n_inputs);
+    let wrap = |a: &ScalarExpr, op: &str, b: &ScalarExpr| -> Result<String, LowerError> {
+        Ok(format!(
+            "(({})(({}){} {op} ({}){}))",
+            t.c,
+            t.uns,
+            int_expr(a, cx)?,
+            t.uns,
+            int_expr(b, cx)?
+        ))
+    };
+    let plain = |a: &ScalarExpr, op: &str, b: &ScalarExpr| -> Result<String, LowerError> {
+        Ok(format!("({} {op} {})", int_expr(a, cx)?, int_expr(b, cx)?))
+    };
+    Ok(match e {
+        ScalarExpr::Input(i) if *i < n_inputs => input_leaf(*i, cx),
+        ScalarExpr::Input(i) => return Err(refuse(format!("input {i} out of range"))),
+        ScalarExpr::Add(a, b) => wrap(a, "+", b)?,
+        ScalarExpr::Sub(a, b) => wrap(a, "-", b)?,
+        ScalarExpr::Mul(a, b) => wrap(a, "*", b)?,
+        ScalarExpr::Binary(BinaryOp::BitAnd, a, b) => plain(a, "&", b)?,
+        ScalarExpr::Binary(BinaryOp::BitOr, a, b) => plain(a, "|", b)?,
+        ScalarExpr::Binary(BinaryOp::BitXor, a, b) => plain(a, "^", b)?,
+        ScalarExpr::Binary(BinaryOp::Shl, a, b) => wrap(a, "<<", b)?,
+        // Arithmetic on signed types, as the IR contract states.
+        ScalarExpr::Binary(BinaryOp::Shr, a, b) => plain(a, ">>", b)?,
+        other => {
+            return Err(refuse(format!(
+                "expression node not supported on {}: {other:?}",
+                t.c
+            )));
+        }
+    })
+}
+
 /// Spell `e` as a fully parenthesised OpenCL C expression of type `t`.
 fn expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
+    if cx.t.int {
+        return int_expr(e, cx);
+    }
     let (t, n_inputs) = (cx.t, cx.n_inputs);
     let sfx = t.suffix;
     Ok(match e {
-        ScalarExpr::Input(i) if *i < n_inputs => match cx.strided {
-            None => format!("in{i}[i]"),
-            // A fully broadcast operand's offset never changes: it was loaded once.
-            Some(st) if st.fully_bcast[usize::from(*i)] => format!("h{i}"),
-            Some(_) => format!("in{i}[o{i}]"),
-        },
+        ScalarExpr::Input(i) if *i < n_inputs => input_leaf(*i, cx),
         // The unravelled output coordinate along axis `d`, as the element type.
         ScalarExpr::Coord(d) if cx.strided.is_some_and(|st| usize::from(*d) < st.rank) => {
             format!("(({}) c{d})", t.c)
@@ -291,7 +371,13 @@ fn offset_expr(plan: &KernelPlan<'_>, operand: usize, stride: &str, rank: usize)
 /// Baracuda's CUDA strided kernels use (`shape{d}`, `s{i}_{d}`, `so_{d}`, `n`),
 /// then a one-work-item-per-element body that unravels the linear index
 /// row-major (last axis fastest) and reads each operand through its strides.
-fn emit_strided_body(s: &mut String, plan: &KernelPlan<'_>, st: &StridedCx, body: &str) {
+fn emit_strided_body(
+    s: &mut String,
+    plan: &KernelPlan<'_>,
+    st: &StridedCx,
+    ctype: &str,
+    body: &str,
+) {
     let rank = st.rank;
     for d in 0..rank {
         s.push_str(&format!("    long shape{d},\n"));
@@ -308,7 +394,7 @@ fn emit_strided_body(s: &mut String, plan: &KernelPlan<'_>, st: &StridedCx, body
     s.push_str("    long i = (long)get_global_id(0);\n    if (i >= n) { return; }\n");
     for (k, hoist) in st.fully_bcast.iter().enumerate() {
         if *hoist {
-            s.push_str(&format!("    {} h{k} = in{k}[0];\n", plan_ctype(plan)));
+            s.push_str(&format!("    {} h{k} = in{k}[0];\n", ctype));
         }
     }
     s.push_str("    long lin = i;\n");
@@ -328,14 +414,6 @@ fn emit_strided_body(s: &mut String, plan: &KernelPlan<'_>, st: &StridedCx, body
     s.push_str(&format!("    out[oo] = {body};\n}}\n"));
 }
 
-fn plan_ctype(plan: &KernelPlan<'_>) -> &'static str {
-    if plan.dtype == ElementKind::F64 {
-        F64.c
-    } else {
-        F32.c
-    }
-}
-
 impl Backend for OpenClC {
     fn name(&self) -> &str {
         "opencl_c"
@@ -349,6 +427,7 @@ impl Backend for OpenClC {
         match dtype {
             ElementKind::F32 => DtypeSupport::Supported,
             ElementKind::F64 if self.fp64 => DtypeSupport::Supported,
+            ElementKind::I32 | ElementKind::I64 => DtypeSupport::Supported,
             _ => DtypeSupport::Unsupported,
         }
     }
@@ -362,6 +441,8 @@ impl Backend for OpenClC {
         }
         let t = match plan.dtype {
             ElementKind::F32 => F32,
+            ElementKind::I32 => I32,
+            ElementKind::I64 => I64,
             ElementKind::F64 if self.fp64 => F64,
             ElementKind::F64 => {
                 return Err(LowerError::UnsupportedDtype {
@@ -374,7 +455,7 @@ impl Backend for OpenClC {
             other => {
                 return Err(LowerError::UnsupportedDtype {
                     dtype: other,
-                    detail: "opencl_c v1: f32 and (with cl_khr_fp64) f64 only".to_owned(),
+                    detail: "opencl_c v1: f32, i32, i64 and (with cl_khr_fp64) f64 only".to_owned(),
                 });
             }
         };
@@ -446,7 +527,7 @@ impl Backend for OpenClC {
                 s.push_str("    long i = (long)get_global_id(0);\n");
                 s.push_str(&format!("    if (i < n) {{ out[i] = {body}; }}\n}}\n"));
             }
-            Some(st) => emit_strided_body(&mut s, plan, st, &body),
+            Some(st) => emit_strided_body(&mut s, plan, st, t.c, &body),
         }
         Ok(GeneratedKernel::new(name, s))
     }
