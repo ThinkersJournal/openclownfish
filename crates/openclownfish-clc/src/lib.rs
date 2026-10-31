@@ -3,7 +3,8 @@
 //! [`OpenClC`] implements `unpopped::backend::Backend`. Version 1 is narrow on
 //! purpose: contiguous single-output `f32` elementwise plans whose body uses
 //! inputs, finite exactly-representable constants, `+ - * /` and the unary
-//! operations negate, abs, square, reciprocal, sqrt, rsqrt, exp and log.
+//! operations negate, abs, square, reciprocal, sqrt, rsqrt, exp and log, and
+//! `Max`/`Min` (NaN-propagating) and `FmaxIeee`/`FminIeee` (NaN-suppressing).
 //! Everything else is a typed refusal, never an approximation.
 
 #[cfg(feature = "parse")]
@@ -12,7 +13,7 @@ mod parse;
 pub use parse::{OPENCL_C, parse_opencl_c};
 
 use unpopped::backend::{Backend, DtypeSupport, GeneratedKernel, LowerError};
-use unpopped::ir::{ScalarExpr, UnaryOp};
+use unpopped::ir::{BinaryOp, ScalarExpr, UnaryOp};
 use unpopped::plan::{KernelPlan, Schedule};
 use unpopped_vocab::{ElementKind, TargetId};
 
@@ -62,9 +63,51 @@ fn expr(e: &ScalarExpr, n_inputs: u8) -> Result<String, LowerError> {
                 other => return Err(refuse(format!("unary op not supported: {other:?}"))),
             }
         }
+        ScalarExpr::Binary(op, a, b) => {
+            let name = match op {
+                BinaryOp::Max => "ocl_max",
+                BinaryOp::Min => "ocl_min",
+                BinaryOp::FmaxIeee => "ocl_fmax",
+                BinaryOp::FminIeee => "ocl_fmin",
+                // OpenCL's `pow` follows C99 Annex F for the special cases.
+                BinaryOp::Pow => "pow",
+                other => return Err(refuse(format!("binary op not supported: {other:?}"))),
+            };
+            format!("{name}({}, {})", expr(a, n_inputs)?, expr(b, n_inputs)?)
+        }
         other => return Err(refuse(format!("expression node not supported: {other:?}"))),
     })
 }
+
+/// Helpers the kernel carries, emitted only when its body calls them.
+///
+/// `Max`/`Min` propagate NaN and `FmaxIeee`/`FminIeee` suppress it, and OpenCL's
+/// own `fmax`/`fmin` leave the sign of a zero result unspecified for `(-0, +0)`.
+/// These helpers follow Unpopped's normative reference instead: NaN is moved
+/// through verbatim, and on a tie the first operand wins (`a >= b ? a : b`), so
+/// `max(-0, +0)` is `-0` on every stack.
+const HELPERS: &[(&str, &str)] = &[
+    (
+        "ocl_sqr(",
+        "inline float ocl_sqr(float x) { return x * x; }\n",
+    ),
+    (
+        "ocl_max(",
+        "inline float ocl_max(float a, float b) {\n    if (isnan(a)) { return a; }\n    if (isnan(b)) { return b; }\n    return a >= b ? a : b;\n}\n",
+    ),
+    (
+        "ocl_min(",
+        "inline float ocl_min(float a, float b) {\n    if (isnan(a)) { return a; }\n    if (isnan(b)) { return b; }\n    return a <= b ? a : b;\n}\n",
+    ),
+    (
+        "ocl_fmax(",
+        "inline float ocl_fmax(float a, float b) {\n    if (isnan(a)) { return b; }\n    if (isnan(b)) { return a; }\n    return a >= b ? a : b;\n}\n",
+    ),
+    (
+        "ocl_fmin(",
+        "inline float ocl_fmin(float a, float b) {\n    if (isnan(a)) { return b; }\n    if (isnan(b)) { return a; }\n    return a <= b ? a : b;\n}\n",
+    ),
+];
 
 fn bin(a: &ScalarExpr, op: &str, b: &ScalarExpr, n: u8) -> Result<String, LowerError> {
     Ok(format!("({} {op} {})", expr(a, n)?, expr(b, n)?))
@@ -127,8 +170,15 @@ impl Backend for OpenClC {
         // Without this a compiler may fuse a*b+c into one rounding, so results
         // would differ from the unfused reference and between vendors.
         s.push_str("#pragma OPENCL FP_CONTRACT OFF\n\n");
-        if body.contains("ocl_sqr(") {
-            s.push_str("inline float ocl_sqr(float x) { return x * x; }\n\n");
+        let mut helpers = false;
+        for (call, text) in HELPERS {
+            if body.contains(call) {
+                s.push_str(text);
+                helpers = true;
+            }
+        }
+        if helpers {
+            s.push('\n');
         }
         s.push_str(&format!("__kernel void {name}(\n"));
         for i in 0..plan.n_inputs {

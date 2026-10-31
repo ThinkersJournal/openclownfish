@@ -7,7 +7,7 @@
 
 use openclownfish::{Context, Program, Runtime};
 use openclownfish_clc::OpenClC;
-use unpopped::ir::{OpDef, UnaryOp, input, konst};
+use unpopped::ir::{BinaryOp, OpDef, UnaryOp, input, konst};
 use unpopped::oracle::{TypedBuffer, evaluate};
 use unpopped::{build_plan, generate};
 use unpopped_vocab::{ArchSku, ElementKind, OpCategory, OperandDesc, structure_key};
@@ -46,6 +46,9 @@ struct Case {
     /// Host f32 arithmetic is a faithful reference (true for IEEE-exact ops).
     /// False for exp/log/rsqrt, whose host libm results are not the standard.
     host_exact: bool,
+    /// Inputs are the NaN/inf/signed-zero grid and results are compared by
+    /// bit pattern (NaN only by being NaN), not by ULP.
+    special: bool,
 }
 
 fn cases() -> Vec<Case> {
@@ -59,6 +62,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 0,
             positive: false,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "sub",
@@ -68,6 +72,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 0,
             positive: false,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "mul",
@@ -77,6 +82,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 0,
             positive: false,
             host_exact: true,
+            special: false,
         },
         // a*b+c: bit-exact only if the compiler did not fuse it.
         Case {
@@ -87,6 +93,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 0,
             positive: false,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "neg_scale",
@@ -101,6 +108,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 0,
             positive: false,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "div",
@@ -110,6 +118,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 3,
             positive: false,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "abs",
@@ -119,6 +128,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 0,
             positive: false,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "sqr",
@@ -128,6 +138,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 0,
             positive: false,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "recip",
@@ -137,6 +148,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 3,
             positive: false,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "sqrt",
@@ -146,6 +158,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 3,
             positive: true,
             host_exact: true,
+            special: false,
         },
         Case {
             name: "rsqrt",
@@ -155,6 +168,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 4,
             positive: true,
             host_exact: false,
+            special: false,
         },
         Case {
             name: "exp",
@@ -164,6 +178,7 @@ fn cases() -> Vec<Case> {
             max_ulps: 4,
             positive: false,
             host_exact: false,
+            special: false,
         },
         Case {
             name: "log",
@@ -173,6 +188,68 @@ fn cases() -> Vec<Case> {
             max_ulps: 4,
             positive: true,
             host_exact: false,
+            special: false,
+        },
+        Case {
+            name: "max",
+            op: OpDef::elementwise("max", 2, &f, input(0).max(input(1))),
+            cat: OpCategory::BinaryElementwise,
+            n_inputs: 2,
+            max_ulps: 0,
+            positive: false,
+            host_exact: false,
+            special: true,
+        },
+        Case {
+            name: "min",
+            op: OpDef::elementwise("min", 2, &f, input(0).min(input(1))),
+            cat: OpCategory::BinaryElementwise,
+            n_inputs: 2,
+            max_ulps: 0,
+            positive: false,
+            host_exact: false,
+            special: true,
+        },
+        Case {
+            name: "fmax_ieee",
+            op: OpDef::elementwise(
+                "fmax_ieee",
+                2,
+                &f,
+                input(0).binary(BinaryOp::FmaxIeee, input(1)),
+            ),
+            cat: OpCategory::BinaryElementwise,
+            n_inputs: 2,
+            max_ulps: 0,
+            positive: false,
+            host_exact: false,
+            special: true,
+        },
+        Case {
+            name: "fmin_ieee",
+            op: OpDef::elementwise(
+                "fmin_ieee",
+                2,
+                &f,
+                input(0).binary(BinaryOp::FminIeee, input(1)),
+            ),
+            cat: OpCategory::BinaryElementwise,
+            n_inputs: 2,
+            max_ulps: 0,
+            positive: false,
+            host_exact: false,
+            special: true,
+        },
+        // OpenCL allows pow 16 ULP; one more so a stack at the limit is not flaky.
+        Case {
+            name: "pow",
+            op: OpDef::elementwise("pow", 1, &f, input(0).binary(BinaryOp::Pow, konst(2.5))),
+            cat: OpCategory::UnaryElementwise,
+            n_inputs: 1,
+            max_ulps: 17,
+            positive: true,
+            host_exact: false,
+            special: false,
         },
     ]
 }
@@ -184,6 +261,29 @@ fn data(n: usize, which: usize) -> Vec<f32> {
         .map(|i| {
             let x = (i as f32 + 1.0) * 0.173 + which as f32 * 0.37;
             if i % 7 == 3 { -x * 1.0001 } else { x * 1.3 }
+        })
+        .collect()
+}
+
+/// Every pairing of these nine values appears (81 of the first elements), so NaN
+/// in either operand, both infinities, and both zeros all meet each other.
+const SPECIAL: [f32; 9] = [
+    f32::NAN,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    0.0,
+    -0.0,
+    1.0,
+    -1.0,
+    2.5,
+    -2.5,
+];
+
+fn special_data(n: usize, which: usize) -> Vec<f32> {
+    (0..n)
+        .map(|i| {
+            let k = if which == 0 { i % 9 } else { (i / 9) % 9 };
+            SPECIAL[k]
         })
         .collect()
 }
@@ -233,7 +333,11 @@ fn run_on_every_device(n_el: usize) {
                 let mut k = prog.kernel(&kernel.name).unwrap();
                 let inputs: Vec<Vec<f32>> = (0..c.n_inputs)
                     .map(|w| {
-                        let v = data(n_el, w);
+                        let v = if c.special {
+                            special_data(n_el, w)
+                        } else {
+                            data(n_el, w)
+                        };
                         if c.positive {
                             v.into_iter().map(|x| x.abs() + 0.01).collect()
                         } else {
@@ -297,6 +401,30 @@ fn run_on_every_device(n_el: usize) {
                         }
                     })
                     .collect();
+                if c.special {
+                    for (i, g) in got.iter().enumerate() {
+                        let w = want[i] as f32;
+                        let ok = if w.is_nan() {
+                            g.is_nan()
+                        } else if c.name.ends_with("_ieee") && w == 0.0 {
+                            // IEEE maxNum/minNum leave the sign of a zero tie open.
+                            *g == 0.0
+                        } else {
+                            g.to_bits() == w.to_bits()
+                        };
+                        assert!(
+                            ok,
+                            "{label}: {} {:?} {:?} -> {g:?} (bits {:#x}), oracle {w:?} (bits {:#x})",
+                            c.name,
+                            inputs[0][i],
+                            inputs[1][i],
+                            g.to_bits(),
+                            w.to_bits()
+                        );
+                    }
+                    eprintln!("{label}: {} exact over the NaN/inf/zero grid", c.name);
+                    continue;
+                }
                 let vs_host = got
                     .iter()
                     .zip(&host)

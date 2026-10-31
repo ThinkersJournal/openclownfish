@@ -5,13 +5,12 @@ You own **OpenCLownfish**: safe Rust OpenCL interface, OpenCL C parser+emitter f
 CireSnave goal (2026-10-30, verbatim): *"so we can really test the limits of every manufacturer's software stack."* Do NOT claim macOS support (row M1).
 
 ## State at 2026-10-31
-- main 3a55a05 = 0.0.8: loader, safe layer C3/C4, emitter X2 v1, parser X1 v1 (`openclownfish-clc`, feature `parse`).
-- Branch `x2-unary` (worktree `C:\Projects\openclownfish-wt-x2b`): emitter gains abs/sqr/recip/sqrt/rsqrt/exp/log with device differentials (design note section 7), 0.0.9 proposed. After merge: remove worktree, delete branch via API.
-- Waiting on Unpopped I1 (per-Frontend math tables, their lane is building it): then lift sqrt/exp/pow etc. and drop the "refused" pin in `tests/lift.rs`. Keep them refused until then (PM).
+- main b43d8c4 = 0.0.9: loader, safe layer C3/C4, emitter (arith, unary ops), parser X1 v1 (`openclownfish-clc`, feature `parse`).
+- Branch `x2-minmax` (worktree `C:\Projects\openclownfish-wt-x2c`): emitter + Max/Min/FmaxIeee/FminIeee/Pow with device differentials; unpopped 0.35.3; parser lifts OpenCL math names via `with_intrinsics`. 0.0.10 proposed. After merge: remove worktree, delete branch via API.
 - PM ruling: the desktop rig dual-boots (Windows OR Linux). H1 results are labelled with OS and booted state; the other OS stays UNVERIFIED until it boots. Metal/Triton/Mojo parked after all other backends.
 
 ## Next (unblocked, start without asking)
-1. X2: Max/Min/Select (IR Max/Min propagate NaN, OpenCL fmax/fmin suppress it: spell explicitly), f64 behind `cl_khr_fp64`, Strided schedule; each with a device differential.
+1. X2: comparisons and Select (cond is tested != 0, NaN true, -0.0 false), f64 behind `cl_khr_fp64`, Strided schedule; each with a device differential.
 2. X1 beyond elementwise (reduction, scan); N-D `get_global_id(d)` to `Coord(d)`.
 3. H1 on the rig per boot (needs the PM/CireSnave, board 329). Laptop done.
 

@@ -33,9 +33,11 @@ crates.io, never the reverse and never by path.
   `openclownfish-clc`; reuses `lift_elementwise_with`. Buffers are named `in0, in1, ..` and `out`
   (`with` a `ResourceMap` for other names). The index is a lone identifier (`size_t i = get_global_id(0)`);
   `out[get_global_id(0)]` inline is refused as not elementwise.
-- **Known gap:** Unpopped's `unary_fn`/`binary_fn` table is fixed and CUDA-flavoured (`expf`, `sqrtf`),
-  not per frontend. OpenCL C has no `expf`; it overloads `exp`, `sqrt`, `pow`, so today only `fabs`,
-  `abs`, `fmax`, `fmin` lift, and the rest is `Unrecognized` (pinned by a test). Asked of the Unpopped lane.
+- **Math names (as built, Unpopped 0.35.3):** `Frontend::with_intrinsics` replaces the CUDA call tables
+  (`expf`, `sqrtf`) with OpenCL's overloaded names: `exp exp2 log log2 sqrt rsqrt fabs tanh sin cos floor
+  ceil trunc` and `fmax fmin pow atan2 copysign`. `fmax`/`fmin` map to the NaN-suppressing
+  `FmaxIeee`/`FminIeee`. Refused (tests pin it): `native_*` and `half_*` (reduced accuracy), CUDA spellings
+  (`expf`), and `abs`, which is integer-only in OpenCL C.
 - **Residue (refused, never approximated):** `barrier`, `mem_fence`, `atomic_*`, `__local` buffers,
   `work_group_*` built-ins, `async_work_group_copy`, pipes, images/samplers, device-side enqueue,
   `printf`, `#pragma`. Each is a typed refusal naming the construct.
@@ -114,3 +116,16 @@ Inputs for sqrt, rsqrt and log are positive. NVIDIA and AMD `sqrt` and reciproca
 rounded by default (1 ULP) while the Intel CPU stack is exact; the "accepted" column is OpenCL's
 default allowance (3 for sqrt and division, exp and log), widened by one for rsqrt/exp/log so a
 stack at the spec limit is not a flaky failure. Windows 11 laptop booted; rig and Linux UNVERIFIED.
+
+### Max, Min, Fmax/Fmin and pow (emitter 0.0.10)
+
+`max`/`min` (NaN-propagating) and `fmax_ieee`/`fmin_ieee` (NaN-suppressing) were run over a 9 x 9 grid of
+{NaN, +inf, -inf, +0, -0, 1, -1, 2.5, -2.5} and agree with the oracle exactly on all three devices (NaN
+only by being NaN; every other result by bit pattern, so the sign of a zero is checked). A first version
+that made `+0` beat `-0` disagreed with the oracle, which keeps the first operand on a tie
+(`max(-0, +0) = -0`); the helpers now follow it. OpenCL's own `fmax`/`fmin` leave that sign unspecified,
+so the kernel carries its own helpers. IEEE maxNum/minNum leave a zero tie open, so for the two `_ieee`
+ops the test accepts either zero.
+
+`pow(x, 2.5)` over positive x: NVIDIA 2 ULP, AMD 1, Intel CPU 0 from the f64 oracle (OpenCL allows 16;
+the test accepts 17). Windows 11 laptop booted; rig and Linux UNVERIFIED.

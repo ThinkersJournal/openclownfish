@@ -3,7 +3,7 @@
 use openclownfish_clc::{OPENCL_C, OpenClC};
 use unpopped::convert::lift_elementwise;
 use unpopped::generate;
-use unpopped::ir::{OpDef, UnaryOp, input, konst};
+use unpopped::ir::{BinaryOp, OpDef, UnaryOp, input, konst};
 use unpopped::lift::LiftError;
 use unpopped_vocab::{ArchSku, ElementKind, OpCategory, OperandDesc, structure_key};
 
@@ -97,15 +97,61 @@ fn not_a_kernel_and_not_elementwise_are_distinct_refusals() {
     ));
 }
 
-/// Pins the current limit so it is visible, not silent: Unpopped's walker maps
-/// CUDA spellings (`sqrtf`) and has no per-frontend table, so OpenCL's
-/// overloaded `sqrt` is a typed refusal until Unpopped adds one.
-#[test]
-fn overloaded_math_names_are_refused_until_unpopped_maps_them() {
-    let err = lift(
-        "__kernel void k(__global const float* in0, __global float* out) { \
-         int i = get_global_id(0); out[i] = sqrt(in0[i]); }",
+fn unary_kernel(call: &str) -> String {
+    format!(
+        "__kernel void k(__global const float* in0, __global float* out) {{ \
+         int i = get_global_id(0); out[i] = {call}(in0[i]); }}"
     )
-    .unwrap_err();
-    assert!(matches!(err, LiftError::Unrecognized(_)), "{err:?}");
+}
+
+/// OpenCL's overloaded math names lift to the matching IR operators (Unpopped
+/// 0.35.3 per-frontend tables).
+#[test]
+fn overloaded_math_names_lift_to_their_operators() {
+    for (call, op) in [
+        ("sqrt", UnaryOp::Sqrt),
+        ("exp", UnaryOp::Exp),
+        ("log", UnaryOp::Log),
+        ("rsqrt", UnaryOp::Rsqrt),
+        ("fabs", UnaryOp::Abs),
+        ("tanh", UnaryOp::Tanh),
+    ] {
+        let got = lift(&unary_kernel(call)).unwrap();
+        assert_eq!(got.body, input(0).unary(op).0, "{call}");
+    }
+}
+
+#[test]
+fn pow_lifts_and_fmax_stays_nan_suppressing() {
+    let src = "__kernel void k(__global const float* in0, __global const float* in1, \
+               __global float* out) { int i = get_global_id(0); out[i] = pow(in0[i], in1[i]); }";
+    let got = lift(src).unwrap();
+    assert_eq!(got.body, input(0).binary(BinaryOp::Pow, input(1)).0);
+    let src = src.replace("pow(", "fmax(");
+    let got = lift(&src).unwrap();
+    assert_eq!(got.body, input(0).binary(BinaryOp::FmaxIeee, input(1)).0);
+}
+
+/// Reduced-accuracy built-ins, CUDA spellings and the integer `abs` are not
+/// OpenCL float math: each stays a typed refusal rather than a guess.
+#[test]
+fn approximate_and_foreign_spellings_are_refused() {
+    for call in ["native_exp", "half_sqrt", "expf", "sqrtf", "abs"] {
+        let err = lift(&unary_kernel(call)).unwrap_err();
+        assert!(matches!(err, LiftError::Unrecognized(_)), "{call}: {err:?}");
+    }
+}
+
+/// Source -> IR -> OpenCL C for a lifted `sqrt`: the same kernel as the
+/// hand-built op, so lifting and emitting agree on the operator.
+#[test]
+fn lifted_sqrt_emits_the_same_kernel_as_the_hand_built_one() {
+    let lifted = lift(&unary_kernel("sqrt")).unwrap();
+    let built = OpDef::elementwise("lifted", 1, F32, input(0).unary(UnaryOp::Sqrt));
+    let d = OperandDesc::new(1, &[8], &[1], ElementKind::F32, 256);
+    let key = structure_key(OpCategory::UnaryElementwise, &[d, d], ArchSku::Sm89);
+    assert_eq!(
+        generate(&lifted, &key, &OpenClC).source,
+        generate(&built, &key, &OpenClC).source
+    );
 }

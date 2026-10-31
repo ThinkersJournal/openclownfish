@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.10
+
+- Emitter: Max, Min, FmaxIeee, FminIeee, Pow; parser lifts OpenCL math names via Unpopped 0.35.3 Frontend tables (X1/X2).
+
 ## 0.0.9
 
 - Emitter: abs, sqr, recip, sqrt, rsqrt, exp, log with device differential tests (X2).
