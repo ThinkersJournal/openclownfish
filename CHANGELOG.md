@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.30
+
+- Deps: unpopped and unpopped-vocab 0.39.1 (0.39 is Breaking upstream: windows with no in-bounds tap are declined, and the oracle takes integer shift counts modulo the width). The emitter serves only elementwise, reduction and scan accesses, so it has no windowed op that the tap rule could reach; the integer shift differential (negative and over-wide counts) and every other device differential pass unchanged on all 3 laptop devices.
+
 ## 0.0.29
 
 - Emitter: reductions over several inputs are served (dot product, weighted Max/Min, a dot with a fused post), by the serial kernel and the `blockreduce` variant. Kernel arguments: the input pointers, `out`, `shape{d}`, then `s{k}_{d}` for every input `k` in turn, `so_{j}`, `n_out`; each input is read through its own strides, so a broadcast input (stride 0) needs only its smaller buffer. A single-input reduction takes the same arguments as before. The cases (f32/f64/i32/i64, two shapes, four axis sets, dense and broadcast second input, serial and block sizes 8 and 32) agree bit for bit with the oracle on all 3 laptop devices (X2).
