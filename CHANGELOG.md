@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.12
+
+- Emitter: six comparisons and Select, bit-exact over the NaN/inf/zero grid on every device (X2).
+
 ## 0.0.11
 
 - Device limits and extensions (compute units, work-group size, memory, fp64/fp16); probe prints host OS and limits; docs/device-reports.md (H1).

@@ -4,7 +4,8 @@
 //! purpose: contiguous single-output `f32` elementwise plans whose body uses
 //! inputs, finite exactly-representable constants, `+ - * /` and the unary
 //! operations negate, abs, square, reciprocal, sqrt, rsqrt, exp and log, and
-//! `Max`/`Min` (NaN-propagating) and `FmaxIeee`/`FminIeee` (NaN-suppressing).
+//! `Max`/`Min` (NaN-propagating) and `FmaxIeee`/`FminIeee` (NaN-suppressing),
+//! `Pow`, the six comparisons (1.0 or 0.0) and `Select`.
 //! Everything else is a typed refusal, never an approximation.
 
 #[cfg(feature = "parse")]
@@ -63,6 +64,40 @@ fn expr(e: &ScalarExpr, n_inputs: u8) -> Result<String, LowerError> {
                 other => return Err(refuse(format!("unary op not supported: {other:?}"))),
             }
         }
+        // A comparison is the float 1.0 or 0.0 with C's NaN rules: false on any NaN
+        // operand, except `!=`, which is true.
+        ScalarExpr::Binary(
+            op @ (BinaryOp::CmpEq
+            | BinaryOp::CmpNe
+            | BinaryOp::CmpLt
+            | BinaryOp::CmpLe
+            | BinaryOp::CmpGt
+            | BinaryOp::CmpGe),
+            a,
+            b,
+        ) => {
+            let sym = match op {
+                BinaryOp::CmpEq => "==",
+                BinaryOp::CmpNe => "!=",
+                BinaryOp::CmpLt => "<",
+                BinaryOp::CmpLe => "<=",
+                BinaryOp::CmpGt => ">",
+                _ => ">=",
+            };
+            format!(
+                "(({} {sym} {}) ? 1.0f : 0.0f)",
+                expr(a, n_inputs)?,
+                expr(b, n_inputs)?
+            )
+        }
+        // The condition is tested `!= 0`, so NaN is true and -0.0 is false. The
+        // chosen arm is moved, not computed on.
+        ScalarExpr::Select(c, a, b) => format!(
+            "(({} != 0.0f) ? {} : {})",
+            expr(c, n_inputs)?,
+            expr(a, n_inputs)?,
+            expr(b, n_inputs)?
+        ),
         ScalarExpr::Binary(op, a, b) => {
             let name = match op {
                 BinaryOp::Max => "ocl_max",
