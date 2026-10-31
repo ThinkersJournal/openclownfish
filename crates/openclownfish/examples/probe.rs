@@ -1,10 +1,23 @@
 //! Print every OpenCL platform and device this machine exposes.
-use openclownfish::{Error, Runtime};
+use openclownfish::{Error, Runtime, icd};
 
 fn main() -> Result<(), Error> {
-    let rt = Runtime::load()?;
     // Results are labelled with the OS they were taken on: the rig dual-boots.
     println!("host: {} {}", std::env::consts::OS, std::env::consts::ARCH);
+    // The drivers the system registers, before the loader hides any that fail.
+    for e in icd::registered_icds() {
+        let state = match icd::check_load(&e) {
+            Ok(()) => "loads".to_owned(),
+            Err(why) => format!("FAILS TO LOAD: {why}"),
+        };
+        println!(
+            "icd: {} | {:?} | {} | {state}",
+            e.library,
+            e.source,
+            if e.enabled { "enabled" } else { "disabled" }
+        );
+    }
+    let rt = Runtime::load()?;
     println!("library: {}", rt.library());
     println!("missing entry points: {:?}", rt.missing_entry_points());
     for p in rt.platforms()? {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.21
+
+- Loader: `icd` module lists the drivers the system registers (Windows: Khronos registry key and display-adapter `OpenCLDriverName`, read through the `winreg` crate, no program is run; Unix: `.icd` files) and whether each loads; the probe prints them before the platform list (C2).
+- Deps: unpopped and unpopped-vocab 0.38.0.
+
 ## 0.0.20
 
 - Parser: naive OpenCL C accumulator-loop reductions (sum, prod, max, min, with a pre-map) and scans (cumsum, cummax) lift through the OPENCL_C frontend; the emitted kernel matches the source kernel run as written, bit-exact on every device (X1).

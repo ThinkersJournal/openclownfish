@@ -8,6 +8,8 @@
 
 pub use opencl_sys as types;
 
+pub mod icd;
+
 use libloading::Library;
 use opencl_sys::cl_function_types::{
     clBuildProgram_t, clCreateBuffer_t, clCreateCommandQueue_t,
