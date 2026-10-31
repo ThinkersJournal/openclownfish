@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.6
+
+- Safe layer part 2: Program (build log surfaced), Kernel, unsafe launch, Event with profiling (C4).
+
 ## 0.0.5
 
 - Safe layer part 1: Context, Queue, Buffer with bounds-checked blocking read/write (C3). Design note records the Unpopped lane's answers.

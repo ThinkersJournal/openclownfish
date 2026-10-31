@@ -4,8 +4,10 @@
 //! [`Platform::devices`]. Nothing here needs an OpenCL install to build.
 
 mod context;
+mod program;
 
 pub use context::{Buffer, Context, Queue};
+pub use program::{Event, Kernel, Program};
 
 use std::ffi::c_void;
 use std::ptr;
@@ -38,6 +40,20 @@ pub enum Error {
         /// Raw `cl_int` status.
         code: cl_int,
     },
+    /// `clBuildProgram` failed; `log` is the driver's build log for the device.
+    #[error(
+        "clBuildProgram failed with OpenCL status {code}:
+{log}"
+    )]
+    Build {
+        /// Raw `cl_int` status.
+        code: cl_int,
+        /// Build log, verbatim.
+        log: String,
+    },
+    /// A string argument contains an interior NUL byte.
+    #[error("{0} contains a NUL byte")]
+    InvalidString(&'static str),
     /// A buffer range does not fit the buffer; no driver call was made.
     #[error("range {offset}..{offset}+{len} does not fit a buffer of {size} bytes")]
     OutOfBounds {

@@ -6,13 +6,18 @@ use std::sync::Arc;
 
 use openclownfish_sys::OpenCl;
 use openclownfish_sys::types::{
-    CL_MEM_READ_WRITE, CL_TRUE, cl_command_queue, cl_context, cl_int, cl_mem,
+    CL_MEM_READ_WRITE, CL_QUEUE_PROFILING_ENABLE, CL_QUEUE_PROPERTIES, CL_TRUE, cl_command_queue,
+    cl_context, cl_int, cl_mem, cl_queue_properties,
 };
 
 use crate::{Device, Error, check};
 
 /// Turn a creation call's `errcode_ret` and returned handle into a result.
-fn created<T>(call: &'static str, handle: *mut T, code: cl_int) -> Result<*mut T, Error> {
+pub(crate) fn created<T>(
+    call: &'static str,
+    handle: *mut T,
+    code: cl_int,
+) -> Result<*mut T, Error> {
     check(call, code)?;
     if handle.is_null() {
         // A driver that returns NULL with CL_SUCCESS broke its contract; say so.
@@ -23,9 +28,9 @@ fn created<T>(call: &'static str, handle: *mut T, code: cl_int) -> Result<*mut T
 
 /// An OpenCL context over one device.
 pub struct Context {
-    rt: Arc<OpenCl>,
-    raw: cl_context,
-    device: Device,
+    pub(crate) rt: Arc<OpenCl>,
+    pub(crate) raw: cl_context,
+    pub(crate) device: Device,
 }
 
 impl Context {
@@ -72,13 +77,37 @@ impl Context {
     /// (OpenCL 2.0+), else the deprecated `clCreateCommandQueue` so 1.x stacks
     /// still work.
     pub fn create_queue(&self) -> Result<Queue, Error> {
+        self.queue(false)
+    }
+
+    /// Like [`Context::create_queue`] with `CL_QUEUE_PROFILING_ENABLE`, so
+    /// [`crate::Event::duration_ns`] works for work enqueued on it.
+    pub fn create_profiling_queue(&self) -> Result<Queue, Error> {
+        self.queue(true)
+    }
+
+    fn queue(&self, profiling: bool) -> Result<Queue, Error> {
         let mut code: cl_int = 0;
         let raw = if let Some(f) = self.rt.create_command_queue_with_properties {
-            // SAFETY: valid context and device, null properties, valid out-pointer.
-            unsafe { f(self.raw, self.device.id, ptr::null(), &mut code) }
+            let props: [cl_queue_properties; 3] = [
+                cl_queue_properties::from(CL_QUEUE_PROPERTIES),
+                if profiling {
+                    CL_QUEUE_PROFILING_ENABLE
+                } else {
+                    0
+                },
+                0,
+            ];
+            // SAFETY: valid context and device, zero-terminated property list, valid out-pointer.
+            unsafe { f(self.raw, self.device.id, props.as_ptr(), &mut code) }
         } else if let Some(f) = self.rt.create_command_queue {
-            // SAFETY: valid context and device, zero properties, valid out-pointer.
-            unsafe { f(self.raw, self.device.id, 0, &mut code) }
+            let flags = if profiling {
+                CL_QUEUE_PROFILING_ENABLE
+            } else {
+                0
+            };
+            // SAFETY: valid context and device, property bits, valid out-pointer.
+            unsafe { f(self.raw, self.device.id, flags, &mut code) }
         } else {
             return Err(Error::MissingSymbol("clCreateCommandQueueWithProperties"));
         };
@@ -103,7 +132,7 @@ impl Drop for Context {
 /// it: OpenCL keeps the object alive until that work completes.
 pub struct Buffer {
     rt: Arc<OpenCl>,
-    raw: cl_mem,
+    pub(crate) raw: cl_mem,
     len: usize,
 }
 
@@ -132,8 +161,8 @@ impl Drop for Buffer {
 
 /// An in-order command queue.
 pub struct Queue {
-    rt: Arc<OpenCl>,
-    raw: cl_command_queue,
+    pub(crate) rt: Arc<OpenCl>,
+    pub(crate) raw: cl_command_queue,
 }
 
 /// `[offset, offset + len)` must lie inside a buffer of `size` bytes.
