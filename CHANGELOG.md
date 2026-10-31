@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.16
+
+- Docs: HANDOFF rewritten for the next session.
+
 ## 0.0.15
 
 - Emitter: i32/i64 wrapping + - *, bitwise and shift operators, bit-exact on every device (X2).
