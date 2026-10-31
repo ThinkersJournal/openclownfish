@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.7
+
+- Added openclownfish-clc: v1 OpenCL C emitter (f32 contiguous elementwise) with a device-vs-oracle differential test (X2).
+
 ## 0.0.6
 
 - Safe layer part 2: Program (build log surfaced), Kernel, unsafe launch, Event with profiling (C4).

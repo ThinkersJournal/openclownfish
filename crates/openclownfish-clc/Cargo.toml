@@ -1,0 +1,18 @@
+[package]
+name = "openclownfish-clc"
+description = "OpenCL C emitter for Unpopped: lowers a neutral KernelPlan to OpenCL C source."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["opencl", "kernel", "codegen", "gpu"]
+categories = ["compilers", "development-tools"]
+publish = false
+
+[dependencies]
+unpopped = "0.34.13"
+unpopped-vocab = "0.34.13"
+
+[dev-dependencies]
+openclownfish.workspace = true

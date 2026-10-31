@@ -75,3 +75,23 @@ crates.io, never the reverse and never by path.
    `unpopped-cpu-c`; `lower` is not deprecated. X2 starts on `lower(&KernelPlan)`.
 4. `convert` pulls `tree-sitter` + `tree-sitter-slang` until `vulkane-slang-parse` is published, then
    `tree-sitter` only. Timing is unscheduled and not to be depended on.
+
+## 7. Measurements: emitter v1 on the laptop (Windows 11, laptop booted; rig and Linux UNVERIFIED)
+
+`crates/openclownfish-clc/tests/device_agrees.rs` at the commit that added it: 257-element f32 kernels,
+emitted by `OpenClC`, built and run on each device, compared with host f32 arithmetic rounded after every
+operation ("unfused") and with Unpopped's f64 oracle. Largest distance in ULP:
+
+| device (driver) | add sub mul neg*2.5 | a*b+c vs unfused | a*b+c vs oracle | a/b vs unfused |
+|---|---|---|---|---|
+| NVIDIA RTX 4070 Laptop (OpenCL 3.0 CUDA 13.4.96) | 0 | 0 | 2 | 1 |
+| AMD gfx1036 (OpenCL 2.1 AMD-APP 3652.0) | 0 | 0 | 2 | 1 |
+| Intel OpenCL CPU on Ryzen 9 7940HX (OpenCL 3.0) | 0 | 0 | 2 | 0 |
+
+- Every stack honoured `#pragma OPENCL FP_CONTRACT OFF`: a*b+c matches the unfused result exactly.
+- The oracle disagrees with unfused a*b+c by 2 ULP on all three. The oracle evaluates in f64 and rounds
+  once, which is what a fused multiply-add gives, so it models fused arithmetic for compound bodies
+  while `unpopped-cpu-c` emits unfused C. Reported to the Unpopped lane as a finding, not changed here.
+- Division is within 1 ULP on the two GPU stacks and exact on the CPU stack; the test allows 3 (OpenCL's
+  default permits 2.5). Correctly rounded division would need `-cl-fp32-correctly-rounded-divide-sqrt`
+  where the device offers it; not used in v1.
