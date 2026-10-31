@@ -8,7 +8,7 @@
 //! (NaN-propagating) and `FmaxIeee`/`FminIeee` (NaN-suppressing), `Pow`, the six
 //! comparisons (1.0 or 0.0) and `Select`. Everything else is a typed refusal,
 //! never an approximation. Reductions (`Schedule::Reduction`) are served as a
-//! serial per-output fold over any axis set, one input, identity post-expression,
+//! serial per-output fold over any axis set, one input, a fused post-expression over the finalized fold,
 //! and scans (`Schedule::Scan`) as a serial per-row fold of the innermost axis;
 //! `lower_variants` also offers a work-group-per-row `blockscan` variant of each scan.
 //!
@@ -119,6 +119,9 @@ struct Cx<'a> {
     t: Ty,
     /// `Some` for the strided schedule, where leaves read through offsets.
     strided: Option<&'a StridedCx>,
+    /// A reduction post-expression: `Reduced(0)` is the finalized fold `red`, and
+    /// no input is in scope (the reduced axes are gone).
+    reduced: bool,
 }
 
 /// The strided schedule's compile-time facts, from the structure key.
@@ -167,6 +170,10 @@ fn int_expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
         Ok(format!("({} {op} {})", int_expr(a, cx)?, int_expr(b, cx)?))
     };
     Ok(match e {
+        ScalarExpr::Reduced(0) if cx.reduced => "red".to_owned(),
+        ScalarExpr::Input(_) if cx.reduced => {
+            return Err(refuse("a reduction post-expression cannot read an input"));
+        }
         ScalarExpr::Input(i) if *i < n_inputs => input_leaf(*i, cx),
         ScalarExpr::Input(i) => return Err(refuse(format!("input {i} out of range"))),
         ScalarExpr::Add(a, b) => wrap(a, "+", b)?,
@@ -195,6 +202,10 @@ fn expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
     let (t, n_inputs) = (cx.t, cx.n_inputs);
     let sfx = t.suffix;
     Ok(match e {
+        ScalarExpr::Reduced(0) if cx.reduced => "red".to_owned(),
+        ScalarExpr::Input(_) if cx.reduced => {
+            return Err(refuse("a reduction post-expression cannot read an input"));
+        }
         ScalarExpr::Input(i) if *i < n_inputs => input_leaf(*i, cx),
         // The unravelled output coordinate along axis `d`, as the element type.
         ScalarExpr::Coord(d) if cx.strided.is_some_and(|st| usize::from(*d) < st.rank) => {
@@ -380,10 +391,12 @@ struct ReduceCx {
     /// Ascending input axes folded away; the rest are kept.
     reduced: Vec<usize>,
     kept: Vec<usize>,
+    /// The fused post-expression, over `Reduced(0)` (the post-`Mean` fold).
+    post: ScalarExpr,
 }
 
 /// The reduction plan's facts, or why this emitter cannot serve it. Scope (v1):
-/// one input, identity post-expression, `Sum`/`Mean`/`Prod`/`Max`/`Min`, no
+/// one input, any post-expression over `Reduced(0)` and constants, `Sum`/`Mean`/`Prod`/`Max`/`Min`, no
 /// integer `Mean` (it is a float-output op, unrepresentable in one dtype).
 fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError> {
     let Access::Reduction {
@@ -398,9 +411,6 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
     };
     if plan.n_inputs != 1 {
         return Err(refuse("reductions take a single input"));
-    }
-    if !matches!(post, ScalarExpr::Reduced(0)) {
-        return Err(refuse("fused reduction post-expressions"));
     }
     if t.int && matches!(op, ReduceOp::Mean) {
         return Err(refuse("integer Mean"));
@@ -420,6 +430,7 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
         keepdim: *keepdim,
         reduced,
         kept,
+        post: post.clone(),
     })
 }
 
@@ -441,6 +452,17 @@ fn emit_reduction_params(s: &mut String, rank: usize, rc: &ReduceCx) {
         "    long n_out)
 {\n",
     );
+}
+
+/// The post-expression spelled for the element type, with `red` the finalized fold.
+fn reduction_post(rc: &ReduceCx, cx: Cx<'_>) -> Result<String, LowerError> {
+    expr(
+        &rc.post,
+        Cx {
+            reduced: true,
+            ..cx
+        },
+    )
 }
 
 /// An index expression: the terms added, or `0` when there are none.
@@ -487,7 +509,7 @@ fn emit_reduction_addressing(s: &mut String, rc: &ReduceCx) {
 /// The rest of a reduction kernel after `out`. One work item per output element
 /// folds the reduced axes serially, in row-major order over them, in the element
 /// type.
-fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str) {
+fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str, post: &str) {
     emit_reduction_params(s, rank, rc);
     s.push_str(
         "    long o = (long)get_global_id(0);
@@ -564,7 +586,8 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
         "acc".to_owned()
     };
     s.push_str(&format!(
-        "    out[oo] = {fin};
+        "    {ty} red = {fin};
+    out[oo] = {post};
 }}\n"
     ));
 }
@@ -733,7 +756,14 @@ fn block_prelude(op: ReduceOp, t: Ty) -> String {
 /// then combines the chunks in order, so `ocf_comb(a, b)` always has `a` earlier.
 /// That keeps Max/Min (ties keep the earlier operand, the last NaN wins) the
 /// serial fold's bits, signed zeros and NaN payloads included.
-fn emit_blockreduce_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str) {
+fn emit_blockreduce_body(
+    s: &mut String,
+    rank: usize,
+    rc: &ReduceCx,
+    t: Ty,
+    body: &str,
+    post: &str,
+) {
     let ty = t.c;
     let ident = scan_ident(rc.op, t);
     emit_reduction_params(s, rank, rc);
@@ -794,7 +824,7 @@ fn emit_blockreduce_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body
         _ => "buf[0]".to_owned(),
     };
     s.push_str(&format!(
-        "    if (lid == 0) {{ out[oo] = {fin}; }}
+        "    if (lid == 0) {{ {ty} red = {fin}; out[oo] = {post}; }}
 }}\n"
     ));
 }
@@ -948,6 +978,7 @@ impl Backend for OpenClC {
             n_inputs: plan.n_inputs,
             t,
             strided: None,
+            reduced: false,
         };
         let (variant, op, body, sc, rc);
         if is_scan {
@@ -969,6 +1000,10 @@ impl Backend for OpenClC {
             sc = None;
             rc = Some(r);
         }
+        let post = match &rc {
+            Some(r) => reduction_post(r, cx)?,
+            None => String::new(),
+        };
         let name = format!("{}_{variant}", base.name);
         let mut s = String::new();
         s.push_str("// Generated by openclownfish-clc (opencl_c backend) - do not edit.\n");
@@ -983,7 +1018,7 @@ impl Backend for OpenClC {
         s.push_str("#pragma OPENCL FP_CONTRACT OFF\n\n");
         let mut helpers = false;
         for (call, text) in HELPERS {
-            if body.contains(call) {
+            if body.contains(call) || post.contains(call) {
                 s.push_str(&text.replace("float", t.c));
                 helpers = true;
             }
@@ -1004,7 +1039,7 @@ impl Backend for OpenClC {
              Local memory: B elements of the compute type."
         } else {
             let rc = rc.as_ref().expect("reduction facts");
-            emit_blockreduce_body(&mut s, usize::from(plan.key.rank), rc, t, &body);
+            emit_blockreduce_body(&mut s, usize::from(plan.key.rank), rc, t, &body, &post);
             "one work-group per output element: global = n_out * B, local = B, B a power \
              of two no larger than the device's work-group limit (default 64; build with \
              -D OCF_BLOCK=B to change it). Arguments as the serial reduction: in0, out, \
@@ -1091,9 +1126,14 @@ impl Backend for OpenClC {
             n_inputs: plan.n_inputs,
             t,
             strided: strided.as_ref(),
+            reduced: false,
         };
         // A scan folds its per-element pre-map; the epilogue is the identity.
         let body = expr(scan.as_ref().map_or(plan.body, |(_, pre)| pre), cx)?;
+        let post = match &reduction {
+            Some(rc) => reduction_post(rc, cx)?,
+            None => String::new(),
+        };
         let kind = if let Some((sc, _)) = &scan {
             format!(
                 "_scan_{}{}{}",
@@ -1129,7 +1169,7 @@ impl Backend for OpenClC {
         s.push_str("#pragma OPENCL FP_CONTRACT OFF\n\n");
         let mut helpers = false;
         for (call, text) in HELPERS {
-            if body.contains(call) {
+            if body.contains(call) || post.contains(call) {
                 s.push_str(&text.replace("float", t.c));
                 helpers = true;
             }
@@ -1149,7 +1189,7 @@ impl Backend for OpenClC {
             }
             None if reduction.is_some() => {
                 let rc = reduction.as_ref().unwrap();
-                emit_reduction_body(&mut s, usize::from(plan.key.rank), rc, t, &body);
+                emit_reduction_body(&mut s, usize::from(plan.key.rank), rc, t, &body, &post);
             }
             None => {
                 s.push_str("    long n)\n{\n");
