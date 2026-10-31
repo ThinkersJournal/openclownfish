@@ -64,8 +64,8 @@ fn lifted_op_emits_the_same_kernel_as_the_hand_built_one() {
     let d = OperandDesc::new(1, &[8], &[1], ElementKind::F32, 256);
     let key = structure_key(OpCategory::BinaryElementwise, &[d, d, d], ArchSku::Sm89);
     assert_eq!(
-        generate(&lifted, &key, &OpenClC).source,
-        generate(&built, &key, &OpenClC).source
+        generate(&lifted, &key, &OpenClC::new()).source,
+        generate(&built, &key, &OpenClC::new()).source
     );
 }
 
@@ -151,7 +151,7 @@ fn lifted_sqrt_emits_the_same_kernel_as_the_hand_built_one() {
     let d = OperandDesc::new(1, &[8], &[1], ElementKind::F32, 256);
     let key = structure_key(OpCategory::UnaryElementwise, &[d, d], ArchSku::Sm89);
     assert_eq!(
-        generate(&lifted, &key, &OpenClC).source,
-        generate(&built, &key, &OpenClC).source
+        generate(&lifted, &key, &OpenClC::new()).source,
+        generate(&built, &key, &OpenClC::new()).source
     );
 }

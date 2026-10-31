@@ -47,7 +47,10 @@ crates.io, never the reverse and never by path.
 
 ## 4. Emitter (X2)
 
-- `OpenClC: Backend`, `name() = "opencl-c"`, `provider() = "openclownfish"`.
+- `OpenClC: Backend`, `name() = "opencl_c"`, `provider() = "openclownfish"`. It carries one flag, `fp64`,
+  set with `OpenClC::for_extensions(device.extensions())`: a plan has no device, so the caller says whether
+  `cl_khr_fp64` exists, and an f64 plan without it is a typed `UnsupportedDtype` (no kernel that fails to
+  build on the driver).
 - **Versioned target:** the emitter targets a declared OpenCL C version and extension set, taken from
   the device (`Device::opencl_c_version`, already in `probe`: laptop shows 1.2 on NVIDIA, 2.0 on AMD,
   3.0 on Intel). Spelling needing more than the target offers is `LowerError`, not a downgrade.
@@ -56,8 +59,8 @@ crates.io, never the reverse and never by path.
 - **Address spaces:** buffers are `__global`; scalars are by value. No `__local` or `__constant`
   until the IR has schedules that want them.
 - **Conformance:** the Unpopped suite shows the pattern (`kernel_emit_*_agrees.rs` compares emitted
-  C against the reference). Ours runs emitted source through `clBuildProgram` and compares results
-  with `unpopped-cpu-c`, on every platform the probe finds, via the safe layer from C3 onward.
+  C against the reference). Ours runs emitted source through `clBuildProgram` on every device the probe
+  finds, via the safe layer, and compares results with Unpopped's f64 oracle (section 7).
 
 ## 5. Order of work
 
@@ -137,3 +140,23 @@ and `select(cond, a, b)` (cond tested `!= 0`: NaN true, -0.0 false; the chosen a
 run over the same 9 x 9 NaN/inf/zero grid at n=257 and n=256 and agree with the oracle bit for bit on all
 three laptop devices (Windows 11 booted; rig and Linux UNVERIFIED). No vendor needed a workaround: all
 three compilers follow C's NaN rules for the relational operators without `-cl-finite-math-only`.
+
+### f64 (emitter 0.0.13)
+
+`tests/device_agrees_f64.rs` runs 20 cases (arithmetic, unary, exp/log/pow, Max/Min/Fmax, comparisons,
+Select) at n=257 and n=256 on every device that lists `cl_khr_fp64` (all three here), against the f64
+oracle. Largest ULP distance:
+
+| op | NVIDIA | AMD | Intel CPU | accepted |
+|---|---|---|---|---|
+| add sub mul, a*b+c, neg, abs, sqr, div, recip, sqrt | 0 | 0 | 0 | 0 (div, recip, sqrt: 3) |
+| exp, rsqrt | 1 | 1 | 1 | 4 |
+| log | 0 | 1 | 0 | 4 |
+| pow(x, 2.5) | 1 | 1 | 1 | 17 |
+
+Unlike f32 (where NVIDIA and AMD division, reciprocal and sqrt were 1 ULP off), f64 division, reciprocal and
+sqrt are exact on all three stacks, and `a*b+c` matches the oracle bit for bit because the oracle's f64
+arithmetic is per-operation like the device's with FP_CONTRACT OFF. The NaN/inf/zero grid is bit-exact for
+max, min, fmax, cmp_lt, cmp_ne and select. A device without `cl_khr_fp64` (none on this laptop; the Arc
+A770 is a candidate on the rig, UNVERIFIED) gets a typed refusal from the backend, tested without a device.
+Windows 11 laptop booted; rig and Linux UNVERIFIED.

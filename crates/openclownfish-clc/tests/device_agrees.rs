@@ -364,7 +364,7 @@ fn run_on_every_device(n_el: usize) {
                 let mut operands = vec![desc; c.n_inputs];
                 operands.push(desc);
                 let key = structure_key(c.cat, &operands, ArchSku::Sm89);
-                let kernel = generate(&c.op, &key, &OpenClC);
+                let kernel = generate(&c.op, &key, &OpenClC::new());
                 let prog = match Program::build(&ctx, &kernel.source, "") {
                     Ok(p) => p,
                     Err(e) => panic!(
@@ -532,7 +532,7 @@ fn unsupported_plans_are_refused_not_approximated() {
     let desc = OperandDesc::new(1, &[8], &[1], ElementKind::F32, 256);
     let key = structure_key(OpCategory::UnaryElementwise, &[desc, desc], ArchSku::Sm89);
     let plan = build_plan(&op, &key);
-    let err = unpopped::backend::Backend::lower(&OpenClC, &plan).unwrap_err();
+    let err = unpopped::backend::Backend::lower(&OpenClC::new(), &plan).unwrap_err();
     assert!(err.to_string().contains("opencl_c v1"), "{err}");
     assert!(err.to_string().contains("Tanh"), "{err}");
 }

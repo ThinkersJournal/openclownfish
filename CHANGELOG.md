@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.13
+
+- Emitter: f64 behind cl_khr_fp64 (OpenClC::for_extensions); OpenClC is now a struct, use OpenClC::new() (X2).
+
 ## 0.0.12
 
 - Emitter: six comparisons and Select, bit-exact over the NaN/inf/zero grid on every device (X2).
