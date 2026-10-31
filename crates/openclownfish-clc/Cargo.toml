@@ -16,8 +16,8 @@ default = ["parse"]
 parse = ["unpopped/convert", "dep:tree-sitter", "dep:tree-sitter-cpp"]
 
 [dependencies]
-unpopped = "0.38.1"
-unpopped-vocab = "0.38.1"
+unpopped = "0.38.3"
+unpopped-vocab = "0.38.3"
 tree-sitter = { version = "0.27", optional = true }
 tree-sitter-cpp = { version = "0.23", optional = true }
 

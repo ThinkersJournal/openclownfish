@@ -71,7 +71,7 @@ fn pool(kind: ElementKind, n: usize, which: usize, shift: bool) -> Vec<i64> {
     (0..n)
         .map(|i| {
             if shift && which == 1 {
-                return (i % bits) as i64;
+                return (i % (3 * bits)) as i64 - bits as i64;
             }
             let k = if which == 0 { i % 10 } else { (i / 10) % 10 };
             if kind == ElementKind::I32 {
@@ -169,7 +169,39 @@ fn integer_kernels_agree_with_the_oracle_on_every_device() {
                         let plan = build_plan(&op, &key);
                         let tb: Vec<TypedBuffer> = inputs.iter().map(|v| buffer(kind, v)).collect();
                         let want = evaluate(&plan, &operands, &tb, &[]);
-                        let want = want[0].raw_bytes();
+                        // Shift counts outside `0..bits` are total at the kernel
+                        // layer (unpopped docs/int-div-shift-semantics.md: the count
+                        // is taken unsigned, modulo the bit width), which the plan
+                        // oracle does not model, so shifts are checked against the
+                        // ruled formula; `wrapping_sh*` is exactly that rule.
+                        let shifted: Vec<u8>;
+                        let want = if c.shift {
+                            let left = c.name == "shl";
+                            shifted = (0..n_el)
+                                .flat_map(|i| {
+                                    let (a, s) = (inputs[0][i], inputs[1][i] as u32);
+                                    if kind == ElementKind::I32 {
+                                        let a = a as i32;
+                                        let r = if left {
+                                            a.wrapping_shl(s)
+                                        } else {
+                                            a.wrapping_shr(s)
+                                        };
+                                        r.to_ne_bytes().to_vec()
+                                    } else {
+                                        let r = if left {
+                                            a.wrapping_shl(s)
+                                        } else {
+                                            a.wrapping_shr(s)
+                                        };
+                                        r.to_ne_bytes().to_vec()
+                                    }
+                                })
+                                .collect();
+                            &shifted[..]
+                        } else {
+                            want[0].raw_bytes()
+                        };
                         for i in 0..n_el {
                             let (g, w) = (
                                 &got[i * width..(i + 1) * width],

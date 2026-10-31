@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.25
+
+- Deps: unpopped and unpopped-vocab 0.38.3.
+- Test: integer `<<` and `>>` with negative and over-wide counts (-bits..2*bits) are bit-exact against the ruled total semantics (count unsigned, modulo the width) on every device; no emitter change was needed because OpenCL C masks the count. Integer division remains refused.
+
 ## 0.0.24
 
 - Emitter: `OpenClC::lower_variants` offers a `blockscan` variant of every scan the serial emitter serves: one work-group per row, a local-memory Hillis-Steele scan per chunk of `OCF_BLOCK` elements (default 64, set with `-D OCF_BLOCK=n`), a carry across chunks for longer rows. Float Sum/Prod are `DeterministicallyDivergent`; Max/Min and integer scans are `BitIdentical`. 260 cases at block sizes 8 and 32 agree with the oracle on all 3 laptop devices (X2).
