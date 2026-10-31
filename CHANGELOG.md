@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.27
+
+- Emitter: `OpenClC::lower_variants` also offers a `blockreduce` variant of every reduction the serial emitter serves: one work-group per output element (global = `n_out * B`, local = `B`, `-D OCF_BLOCK=n`, default 64). Each work item folds a contiguous chunk of the row-major reduced extent, then a neighbour-pair tree in `__local` memory combines the chunks in order, so Max/Min keep the serial fold's tie and NaN rule. Float Sum/Mean/Prod are `DeterministicallyDivergent`; Max/Min and integer reductions are `BitIdentical`. An empty reduced extent returns the serial seed. 170 oracle cases per device at block sizes 8 and 32, a NaN/signed-zero Max/Min bit-comparison against the serial kernel, and the empty-extent case agree on all 3 laptop devices (X2).
+- Internal: the reduction emitter's parameter list and addressing are shared between the serial and block kernels; the serial kernel's output is unchanged.
+
 ## 0.0.26
 
 - Deps: unpopped and unpopped-vocab 0.38.4. Workspace tests, including every device differential on the 3 laptop devices, pass unchanged.
