@@ -252,6 +252,48 @@ fn cases() -> Vec<Case> {
             special: false,
         },
     ]
+    .into_iter()
+    .chain(special_cases())
+    .collect()
+}
+
+/// Comparisons and `Select`, over the NaN/inf/zero grid and bit for bit: a
+/// comparison is exactly 1.0 or 0.0, and `Select` moves the chosen arm
+/// untouched (a NaN or a signed zero arrives as it left).
+fn special_cases() -> Vec<Case> {
+    let f = [ElementKind::F32];
+    let mut v = Vec::new();
+    for (name, op) in [
+        ("cmp_eq", BinaryOp::CmpEq),
+        ("cmp_ne", BinaryOp::CmpNe),
+        ("cmp_lt", BinaryOp::CmpLt),
+        ("cmp_le", BinaryOp::CmpLe),
+        ("cmp_gt", BinaryOp::CmpGt),
+        ("cmp_ge", BinaryOp::CmpGe),
+    ] {
+        v.push(Case {
+            name,
+            op: OpDef::elementwise(name, 2, &f, input(0).binary(op, input(1))),
+            cat: OpCategory::BinaryElementwise,
+            n_inputs: 2,
+            max_ulps: 0,
+            positive: false,
+            host_exact: false,
+            special: true,
+        });
+    }
+    // cond = input(0): NaN selects the first arm, -0.0 and +0.0 the second.
+    v.push(Case {
+        name: "select",
+        op: OpDef::elementwise("select", 2, &f, input(0).select(input(1), konst(-3.0))),
+        cat: OpCategory::BinaryElementwise,
+        n_inputs: 2,
+        max_ulps: 0,
+        positive: false,
+        host_exact: false,
+        special: true,
+    });
+    v
 }
 
 /// Inputs chosen so rounding differs between fused and unfused arithmetic and

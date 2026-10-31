@@ -129,3 +129,11 @@ ops the test accepts either zero.
 
 `pow(x, 2.5)` over positive x: NVIDIA 2 ULP, AMD 1, Intel CPU 0 from the f64 oracle (OpenCL allows 16;
 the test accepts 17). Windows 11 laptop booted; rig and Linux UNVERIFIED.
+
+### Comparisons and Select (emitter 0.0.12)
+
+`cmp_eq cmp_ne cmp_lt cmp_le cmp_gt cmp_ge` (each exactly 1.0 or 0.0, false on any NaN operand except `!=`)
+and `select(cond, a, b)` (cond tested `!= 0`: NaN true, -0.0 false; the chosen arm moves untouched) were
+run over the same 9 x 9 NaN/inf/zero grid at n=257 and n=256 and agree with the oracle bit for bit on all
+three laptop devices (Windows 11 booted; rig and Linux UNVERIFIED). No vendor needed a workaround: all
+three compilers follow C's NaN rules for the relational operators without `-cl-finite-math-only`.
