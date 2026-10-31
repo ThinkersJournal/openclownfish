@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.14
+
+- Emitter: strided schedule (transposed, broadcast, rank-3, Coord) in Baracuda's argument convention, bit-exact on every device (X2).
+
 ## 0.0.13
 
 - Emitter: f64 behind cl_khr_fp64 (OpenClC::for_extensions); OpenClC is now a struct, use OpenClC::new() (X2).

@@ -160,3 +160,21 @@ arithmetic is per-operation like the device's with FP_CONTRACT OFF. The NaN/inf/
 max, min, fmax, cmp_lt, cmp_ne and select. A device without `cl_khr_fp64` (none on this laptop; the Arc
 A770 is a candidate on the rig, UNVERIFIED) gets a typed refusal from the backend, tested without a device.
 Windows 11 laptop booted; rig and Linux UNVERIFIED.
+
+### Strided schedule (emitter 0.0.14)
+
+For a plan with a transposed or broadcast operand the emitter produces a rank-specialised kernel whose
+arguments follow Baracuda's CUDA strided convention, so one host launcher design serves both:
+`in0.., out, long shape0.. shape{r-1}, long s{i}_{d} (per input), long so_{d}, long n`. One work-item
+per element unravels the linear index row-major (last axis fastest), forms each operand's offset from its
+runtime strides (broadcast axes drop out; a fully broadcast operand is loaded once), and `Coord(d)` is the
+unravelled coordinate. Refused with a typed `UnsupportedPlanShape`: gather, scatter, runtime base offsets,
+and permuting or layout views. Unpopped does not expose `offset_expr` or the unravel routine, so these are
+re-spelled here from the published `baracuda-cuda-emit` 0.24.0 source; a future Unpopped seam would remove
+the copy.
+
+`tests/device_agrees_strided.rs`: 9 cases (transposed add, row-broadcast mul, scalar-broadcast sub, `Coord`
+add, each at 5x7 and 16x16, and a rank-3 case with a mid-axis broadcast) are bit-exact against the oracle
+on all three laptop devices; each asserts the plan really got `Schedule::Strided`. Input buffers are
+storage images laid out by their strides and the oracle reads them the same way. Windows 11 laptop booted;
+rig and Linux UNVERIFIED.

@@ -19,7 +19,7 @@ mod parse;
 pub use parse::{OPENCL_C, parse_opencl_c};
 
 use unpopped::backend::{Backend, DtypeSupport, GeneratedKernel, LowerError};
-use unpopped::ir::{BinaryOp, ScalarExpr, UnaryOp};
+use unpopped::ir::{BinaryOp, ReadIndex, ScalarExpr, UnaryOp, View, WriteIndex};
 use unpopped::plan::{KernelPlan, Schedule};
 use unpopped_vocab::{ElementKind, TargetId};
 
@@ -80,11 +80,37 @@ fn refuse(detail: impl Into<String>) -> LowerError {
     }
 }
 
+/// What an expression is spelled against.
+#[derive(Copy, Clone)]
+struct Cx<'a> {
+    n_inputs: u8,
+    t: Ty,
+    /// `Some` for the strided schedule, where leaves read through offsets.
+    strided: Option<&'a StridedCx>,
+}
+
+/// The strided schedule's compile-time facts, from the structure key.
+struct StridedCx {
+    rank: usize,
+    /// Per input: every iteration axis is broadcast, so its load is hoisted.
+    fully_bcast: Vec<bool>,
+}
+
 /// Spell `e` as a fully parenthesised OpenCL C expression of type `t`.
-fn expr(e: &ScalarExpr, n_inputs: u8, t: Ty) -> Result<String, LowerError> {
+fn expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
+    let (t, n_inputs) = (cx.t, cx.n_inputs);
     let sfx = t.suffix;
     Ok(match e {
-        ScalarExpr::Input(i) if *i < n_inputs => format!("in{i}[i]"),
+        ScalarExpr::Input(i) if *i < n_inputs => match cx.strided {
+            None => format!("in{i}[i]"),
+            // A fully broadcast operand's offset never changes: it was loaded once.
+            Some(st) if st.fully_bcast[usize::from(*i)] => format!("h{i}"),
+            Some(_) => format!("in{i}[o{i}]"),
+        },
+        // The unravelled output coordinate along axis `d`, as the element type.
+        ScalarExpr::Coord(d) if cx.strided.is_some_and(|st| usize::from(*d) < st.rank) => {
+            format!("(({}) c{d})", t.c)
+        }
         ScalarExpr::Input(i) => return Err(refuse(format!("input {i} out of range"))),
         ScalarExpr::Const(c) => {
             if t.c == "float" {
@@ -103,12 +129,12 @@ fn expr(e: &ScalarExpr, n_inputs: u8, t: Ty) -> Result<String, LowerError> {
                 return Err(refuse(format!("constant {c:?} is not finite")));
             }
         }
-        ScalarExpr::Add(a, b) => bin(a, "+", b, n_inputs, t)?,
-        ScalarExpr::Sub(a, b) => bin(a, "-", b, n_inputs, t)?,
-        ScalarExpr::Mul(a, b) => bin(a, "*", b, n_inputs, t)?,
-        ScalarExpr::Div(a, b) => bin(a, "/", b, n_inputs, t)?,
+        ScalarExpr::Add(a, b) => bin(a, "+", b, cx)?,
+        ScalarExpr::Sub(a, b) => bin(a, "-", b, cx)?,
+        ScalarExpr::Mul(a, b) => bin(a, "*", b, cx)?,
+        ScalarExpr::Div(a, b) => bin(a, "/", b, cx)?,
         ScalarExpr::Unary(op, a) => {
-            let x = expr(a, n_inputs, t)?;
+            let x = expr(a, cx)?;
             match op {
                 UnaryOp::Neg => format!("(-{x})"),
                 UnaryOp::Abs => format!("fabs({x})"),
@@ -145,17 +171,17 @@ fn expr(e: &ScalarExpr, n_inputs: u8, t: Ty) -> Result<String, LowerError> {
             };
             format!(
                 "(({} {sym} {}) ? 1.0{sfx} : 0.0{sfx})",
-                expr(a, n_inputs, t)?,
-                expr(b, n_inputs, t)?
+                expr(a, cx)?,
+                expr(b, cx)?
             )
         }
         // The condition is tested `!= 0`, so NaN is true and -0.0 is false. The
         // chosen arm is moved, not computed on.
         ScalarExpr::Select(c, a, b) => format!(
             "(({} != 0.0{sfx}) ? {} : {})",
-            expr(c, n_inputs, t)?,
-            expr(a, n_inputs, t)?,
-            expr(b, n_inputs, t)?
+            expr(c, cx)?,
+            expr(a, cx)?,
+            expr(b, cx)?
         ),
         ScalarExpr::Binary(op, a, b) => {
             let name = match op {
@@ -167,11 +193,7 @@ fn expr(e: &ScalarExpr, n_inputs: u8, t: Ty) -> Result<String, LowerError> {
                 BinaryOp::Pow => "pow",
                 other => return Err(refuse(format!("binary op not supported: {other:?}"))),
             };
-            format!(
-                "{name}({}, {})",
-                expr(a, n_inputs, t)?,
-                expr(b, n_inputs, t)?
-            )
+            format!("{name}({}, {})", expr(a, cx)?, expr(b, cx)?)
         }
         other => return Err(refuse(format!("expression node not supported: {other:?}"))),
     })
@@ -208,8 +230,110 @@ const HELPERS: &[(&str, &str)] = &[
     ),
 ];
 
-fn bin(a: &ScalarExpr, op: &str, b: &ScalarExpr, n: u8, t: Ty) -> Result<String, LowerError> {
-    Ok(format!("({} {op} {})", expr(a, n, t)?, expr(b, n, t)?))
+fn bin(a: &ScalarExpr, op: &str, b: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
+    Ok(format!("({} {op} {})", expr(a, cx)?, expr(b, cx)?))
+}
+
+/// What the strided schedule needs from the plan, or why this emitter cannot
+/// serve it. Gathers, scatters, runtime base offsets and permuting views change
+/// the kernel's argument list and addressing; they are refused, not guessed.
+fn strided_facts(plan: &KernelPlan<'_>) -> Result<StridedCx, LowerError> {
+    let shape_err = |what: &str| LowerError::UnsupportedPlanShape {
+        detail: format!(
+            "opencl_c v1: strided schedule without {what}; op '{}'",
+            plan.op_name
+        ),
+    };
+    if plan
+        .read_index
+        .iter()
+        .any(|r| !matches!(r, ReadIndex::Direct))
+    {
+        return Err(shape_err("gathers"));
+    }
+    if !matches!(plan.write_index, WriteIndex::Direct) {
+        return Err(shape_err("scatters"));
+    }
+    if plan.base_offsets.iter().any(|b| !b.is_zero()) || !plan.out_base_offset.is_zero() {
+        return Err(shape_err("runtime base offsets"));
+    }
+    if plan.views.iter().any(|v| {
+        !matches!(
+            v,
+            View::Identity | View::Broadcast { .. } | View::Reshape { .. }
+        )
+    }) {
+        return Err(shape_err("permuting or layout views"));
+    }
+    let rank = usize::from(plan.key.rank);
+    let fully_bcast = (0..usize::from(plan.n_inputs))
+        .map(|k| rank > 0 && (0..rank).all(|d| plan.key.operands[k].bcast.is_set(d as u8)))
+        .collect();
+    Ok(StridedCx { rank, fully_bcast })
+}
+
+/// The element offset of operand `k` (`s{k}_{d}` strides; broadcast axes have
+/// stride 0 and drop out) or of the output (`so_{d}`).
+fn offset_expr(plan: &KernelPlan<'_>, operand: usize, stride: &str, rank: usize) -> String {
+    let terms: Vec<String> = (0..rank)
+        .filter(|d| !plan.key.operands[operand].bcast.is_set(*d as u8))
+        .map(|d| format!("c{d}*{stride}_{d}"))
+        .collect();
+    if terms.is_empty() {
+        "0".to_owned()
+    } else {
+        terms.join(" + ")
+    }
+}
+
+/// The rest of a strided kernel after `out`: the runtime shape, every input's
+/// strides, the output's strides and the element count, in the argument order
+/// Baracuda's CUDA strided kernels use (`shape{d}`, `s{i}_{d}`, `so_{d}`, `n`),
+/// then a one-work-item-per-element body that unravels the linear index
+/// row-major (last axis fastest) and reads each operand through its strides.
+fn emit_strided_body(s: &mut String, plan: &KernelPlan<'_>, st: &StridedCx, body: &str) {
+    let rank = st.rank;
+    for d in 0..rank {
+        s.push_str(&format!("    long shape{d},\n"));
+    }
+    for i in 0..plan.n_inputs {
+        for d in 0..rank {
+            s.push_str(&format!("    long s{i}_{d},\n"));
+        }
+    }
+    for d in 0..rank {
+        s.push_str(&format!("    long so_{d},\n"));
+    }
+    s.push_str("    long n)\n{\n");
+    s.push_str("    long i = (long)get_global_id(0);\n    if (i >= n) { return; }\n");
+    for (k, hoist) in st.fully_bcast.iter().enumerate() {
+        if *hoist {
+            s.push_str(&format!("    {} h{k} = in{k}[0];\n", plan_ctype(plan)));
+        }
+    }
+    s.push_str("    long lin = i;\n");
+    for d in (0..rank).rev() {
+        s.push_str(&format!(
+            "    long c{d} = lin % shape{d}; lin /= shape{d};\n"
+        ));
+    }
+    for (k, hoist) in st.fully_bcast.iter().enumerate() {
+        if !*hoist {
+            let off = offset_expr(plan, k, &format!("s{k}"), rank);
+            s.push_str(&format!("    long o{k} = {off};\n"));
+        }
+    }
+    let oo = offset_expr(plan, usize::from(plan.n_inputs), "so", rank);
+    s.push_str(&format!("    long oo = {oo};\n"));
+    s.push_str(&format!("    out[oo] = {body};\n}}\n"));
+}
+
+fn plan_ctype(plan: &KernelPlan<'_>) -> &'static str {
+    if plan.dtype == ElementKind::F64 {
+        F64.c
+    } else {
+        F32.c
+    }
 }
 
 impl Backend for OpenClC {
@@ -265,19 +389,29 @@ impl Backend for OpenClC {
         // `Vectorized` is a width hint for backends that vectorise; this kernel
         // is element-counted (`effective_count_width` stays 1), which is correct
         // for any contiguous elementwise plan.
-        if !matches!(
-            plan.schedule,
-            Schedule::Scalar | Schedule::Vectorized { .. }
-        ) {
-            return Err(LowerError::UnsupportedSchedule {
-                detail: format!(
-                    "opencl_c v1: contiguous scalar or vectorized schedule only, got {:?}",
-                    plan.schedule
-                ),
-            });
-        }
-        let body = expr(plan.body, plan.n_inputs, t)?;
-        let name = format!("openclownfish_{}_{}", plan.op_name, t.tag);
+        let strided = match plan.schedule {
+            Schedule::Scalar | Schedule::Vectorized { .. } => None,
+            Schedule::Strided => Some(strided_facts(plan)?),
+            other => {
+                return Err(LowerError::UnsupportedSchedule {
+                    detail: format!(
+                        "opencl_c v1: scalar, vectorized or strided schedule only, got {other:?}"
+                    ),
+                });
+            }
+        };
+        let cx = Cx {
+            n_inputs: plan.n_inputs,
+            t,
+            strided: strided.as_ref(),
+        };
+        let body = expr(plan.body, cx)?;
+        let kind = if strided.is_some() {
+            format!("_strided_r{}", plan.key.rank)
+        } else {
+            String::new()
+        };
+        let name = format!("openclownfish_{}_{}{kind}", plan.op_name, t.tag);
         let mut s = String::new();
         s.push_str("// Generated by openclownfish-clc (opencl_c backend) - do not edit.\n");
         s.push_str(&format!(
@@ -305,9 +439,15 @@ impl Backend for OpenClC {
         for i in 0..plan.n_inputs {
             s.push_str(&format!("    __global const {}* in{i},\n", t.c));
         }
-        s.push_str(&format!("    __global {}* out,\n    long n)\n{{\n", t.c));
-        s.push_str("    long i = (long)get_global_id(0);\n");
-        s.push_str(&format!("    if (i < n) {{ out[i] = {body}; }}\n}}\n"));
+        s.push_str(&format!("    __global {}* out,\n", t.c));
+        match &strided {
+            None => {
+                s.push_str("    long n)\n{\n");
+                s.push_str("    long i = (long)get_global_id(0);\n");
+                s.push_str(&format!("    if (i < n) {{ out[i] = {body}; }}\n}}\n"));
+            }
+            Some(st) => emit_strided_body(&mut s, plan, st, &body),
+        }
         Ok(GeneratedKernel::new(name, s))
     }
 }
