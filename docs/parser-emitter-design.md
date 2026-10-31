@@ -98,3 +98,19 @@ operation ("unfused") and with Unpopped's f64 oracle. Largest distance in ULP:
 - Division is within 1 ULP on the two GPU stacks and exact on the CPU stack; the test allows 3 (OpenCL's
   default permits 2.5). Correctly rounded division would need `-cl-fp32-correctly-rounded-divide-sqrt`
   where the device offers it; not used in v1.
+
+### Unary operations (emitter 0.0.9), same method, largest ULP distance from the f64 oracle
+
+| op | NVIDIA RTX 4070 Laptop | AMD gfx1036 | Intel CPU | accepted |
+|---|---|---|---|---|
+| abs, sqr | 0 | 0 | 0 | 0 |
+| recip (`1.0f / x`) | 1 | 1 | 0 | 3 |
+| sqrt | 1 | 1 | 0 | 3 |
+| rsqrt | 1 | 1 | 1 | 4 |
+| exp | 2 | 1 | 1 | 4 |
+| log | 1 | 2 | 1 | 4 |
+
+Inputs for sqrt, rsqrt and log are positive. NVIDIA and AMD `sqrt` and reciprocal are not correctly
+rounded by default (1 ULP) while the Intel CPU stack is exact; the "accepted" column is OpenCL's
+default allowance (3 for sqrt and division, exp and log), widened by one for rsqrt/exp/log so a
+stack at the spec limit is not a flaky failure. Windows 11 laptop booted; rig and Linux UNVERIFIED.

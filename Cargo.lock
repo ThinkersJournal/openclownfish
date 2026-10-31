@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "openclownfish"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "openclownfish-sys",
  "thiserror",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "openclownfish-clc"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "openclownfish",
  "tree-sitter",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "openclownfish-sys"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "libloading",
  "opencl-sys",

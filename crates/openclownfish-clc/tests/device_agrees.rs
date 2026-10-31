@@ -41,6 +41,11 @@ struct Case {
     /// Largest accepted ULP distance from the oracle: 0 where IEEE makes the
     /// result exact, 3 for division (OpenCL allows 2.5 ULP by default).
     max_ulps: u64,
+    /// Inputs restricted to positive values (sqrt, log, rsqrt).
+    positive: bool,
+    /// Host f32 arithmetic is a faithful reference (true for IEEE-exact ops).
+    /// False for exp/log/rsqrt, whose host libm results are not the standard.
+    host_exact: bool,
 }
 
 fn cases() -> Vec<Case> {
@@ -52,6 +57,8 @@ fn cases() -> Vec<Case> {
             cat: OpCategory::BinaryElementwise,
             n_inputs: 2,
             max_ulps: 0,
+            positive: false,
+            host_exact: true,
         },
         Case {
             name: "sub",
@@ -59,6 +66,8 @@ fn cases() -> Vec<Case> {
             cat: OpCategory::BinaryElementwise,
             n_inputs: 2,
             max_ulps: 0,
+            positive: false,
+            host_exact: true,
         },
         Case {
             name: "mul",
@@ -66,6 +75,8 @@ fn cases() -> Vec<Case> {
             cat: OpCategory::BinaryElementwise,
             n_inputs: 2,
             max_ulps: 0,
+            positive: false,
+            host_exact: true,
         },
         // a*b+c: bit-exact only if the compiler did not fuse it.
         Case {
@@ -74,6 +85,8 @@ fn cases() -> Vec<Case> {
             cat: OpCategory::BinaryElementwise,
             n_inputs: 3,
             max_ulps: 0,
+            positive: false,
+            host_exact: true,
         },
         Case {
             name: "neg_scale",
@@ -86,6 +99,8 @@ fn cases() -> Vec<Case> {
             cat: OpCategory::UnaryElementwise,
             n_inputs: 1,
             max_ulps: 0,
+            positive: false,
+            host_exact: true,
         },
         Case {
             name: "div",
@@ -93,6 +108,71 @@ fn cases() -> Vec<Case> {
             cat: OpCategory::BinaryElementwise,
             n_inputs: 2,
             max_ulps: 3,
+            positive: false,
+            host_exact: true,
+        },
+        Case {
+            name: "abs",
+            op: OpDef::elementwise("abs", 1, &f, input(0).unary(UnaryOp::Abs)),
+            cat: OpCategory::UnaryElementwise,
+            n_inputs: 1,
+            max_ulps: 0,
+            positive: false,
+            host_exact: true,
+        },
+        Case {
+            name: "sqr",
+            op: OpDef::elementwise("sqr", 1, &f, input(0).unary(UnaryOp::Sqr)),
+            cat: OpCategory::UnaryElementwise,
+            n_inputs: 1,
+            max_ulps: 0,
+            positive: false,
+            host_exact: true,
+        },
+        Case {
+            name: "recip",
+            op: OpDef::elementwise("recip", 1, &f, input(0).unary(UnaryOp::Recip)),
+            cat: OpCategory::UnaryElementwise,
+            n_inputs: 1,
+            max_ulps: 3,
+            positive: false,
+            host_exact: true,
+        },
+        Case {
+            name: "sqrt",
+            op: OpDef::elementwise("sqrt", 1, &f, input(0).unary(UnaryOp::Sqrt)),
+            cat: OpCategory::UnaryElementwise,
+            n_inputs: 1,
+            max_ulps: 3,
+            positive: true,
+            host_exact: true,
+        },
+        Case {
+            name: "rsqrt",
+            op: OpDef::elementwise("rsqrt", 1, &f, input(0).unary(UnaryOp::Rsqrt)),
+            cat: OpCategory::UnaryElementwise,
+            n_inputs: 1,
+            max_ulps: 4,
+            positive: true,
+            host_exact: false,
+        },
+        Case {
+            name: "exp",
+            op: OpDef::elementwise("exp", 1, &f, input(0).unary(UnaryOp::Exp)),
+            cat: OpCategory::UnaryElementwise,
+            n_inputs: 1,
+            max_ulps: 4,
+            positive: false,
+            host_exact: false,
+        },
+        Case {
+            name: "log",
+            op: OpDef::elementwise("log", 1, &f, input(0).unary(UnaryOp::Log)),
+            cat: OpCategory::UnaryElementwise,
+            n_inputs: 1,
+            max_ulps: 4,
+            positive: true,
+            host_exact: false,
         },
     ]
 }
@@ -151,7 +231,16 @@ fn run_on_every_device(n_el: usize) {
                     ),
                 };
                 let mut k = prog.kernel(&kernel.name).unwrap();
-                let inputs: Vec<Vec<f32>> = (0..c.n_inputs).map(|w| data(n_el, w)).collect();
+                let inputs: Vec<Vec<f32>> = (0..c.n_inputs)
+                    .map(|w| {
+                        let v = data(n_el, w);
+                        if c.positive {
+                            v.into_iter().map(|x| x.abs() + 0.01).collect()
+                        } else {
+                            v
+                        }
+                    })
+                    .collect();
                 let bufs: Vec<_> = inputs
                     .iter()
                     .map(|v| {
@@ -198,7 +287,13 @@ fn run_on_every_device(n_el: usize) {
                             "mul" => x(0) * x(1),
                             "muladd" => (x(0) * x(1)) + x(2),
                             "neg_scale" => -x(0) * 2.5,
-                            _ => x(0) / x(1),
+                            "div" => x(0) / x(1),
+                            "abs" => x(0).abs(),
+                            "sqr" => x(0) * x(0),
+                            "recip" => 1.0 / x(0),
+                            "sqrt" => x(0).sqrt(),
+                            // exp, log, rsqrt: not host_exact; never compared.
+                            _ => f32::NAN,
                         }
                     })
                     .collect();
@@ -214,13 +309,18 @@ fn run_on_every_device(n_el: usize) {
                     .map(|(g, w)| ulps(*g, *w as f32))
                     .max()
                     .unwrap();
+                let host_note = if c.host_exact {
+                    format!("{vs_host} ulp")
+                } else {
+                    "n/a".to_owned()
+                };
                 eprintln!(
-                    "{label}: {} vs host-f32 {vs_host} ulp, vs oracle {vs_oracle} ulp",
+                    "{label}: {} vs host-f32 {host_note}, vs oracle {vs_oracle} ulp",
                     c.name
                 );
                 for (i, g) in got.iter().enumerate() {
                     assert!(
-                        !g.is_nan() || host[i].is_nan(),
+                        !g.is_nan() || want[i].is_nan(),
                         "{label}: {} NEVER-WROTE at index {i}",
                         c.name
                     );
@@ -228,7 +328,7 @@ fn run_on_every_device(n_el: usize) {
                 // Primary check: the unfused host result. With FP_CONTRACT OFF a
                 // device must match it exactly (division: OpenCL's 2.5 ULP).
                 assert!(
-                    vs_host <= c.max_ulps,
+                    !c.host_exact || vs_host <= c.max_ulps,
                     "{label}: {} off by {vs_host} ulp from host f32 (limit {})",
                     c.name,
                     c.max_ulps
@@ -252,16 +352,17 @@ fn run_on_every_device(n_el: usize) {
 
 #[test]
 fn unsupported_plans_are_refused_not_approximated() {
-    // sqrt is outside v1: must be a typed refusal, never a guess.
+    // tanh is outside this version: must be a typed refusal, never a guess.
     let op = OpDef::elementwise(
         "root",
         1,
         &[ElementKind::F32],
-        input(0).unary(UnaryOp::Sqrt),
+        input(0).unary(UnaryOp::Tanh),
     );
     let desc = OperandDesc::new(1, &[8], &[1], ElementKind::F32, 256);
     let key = structure_key(OpCategory::UnaryElementwise, &[desc, desc], ArchSku::Sm89);
     let plan = build_plan(&op, &key);
     let err = unpopped::backend::Backend::lower(&OpenClC, &plan).unwrap_err();
     assert!(err.to_string().contains("opencl_c v1"), "{err}");
+    assert!(err.to_string().contains("Tanh"), "{err}");
 }

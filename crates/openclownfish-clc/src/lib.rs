@@ -2,7 +2,8 @@
 //!
 //! [`OpenClC`] implements `unpopped::backend::Backend`. Version 1 is narrow on
 //! purpose: contiguous single-output `f32` elementwise plans whose body uses
-//! inputs, finite exactly-representable constants, `+ - * /` and negation.
+//! inputs, finite exactly-representable constants, `+ - * /` and the unary
+//! operations negate, abs, square, reciprocal, sqrt, rsqrt, exp and log.
 //! Everything else is a typed refusal, never an approximation.
 
 #[cfg(feature = "parse")]
@@ -45,7 +46,22 @@ fn expr(e: &ScalarExpr, n_inputs: u8) -> Result<String, LowerError> {
         ScalarExpr::Sub(a, b) => bin(a, "-", b, n_inputs)?,
         ScalarExpr::Mul(a, b) => bin(a, "*", b, n_inputs)?,
         ScalarExpr::Div(a, b) => bin(a, "/", b, n_inputs)?,
-        ScalarExpr::Unary(UnaryOp::Neg, a) => format!("(-{})", expr(a, n_inputs)?),
+        ScalarExpr::Unary(op, a) => {
+            let x = expr(a, n_inputs)?;
+            match op {
+                UnaryOp::Neg => format!("(-{x})"),
+                UnaryOp::Abs => format!("fabs({x})"),
+                // A helper rather than `(x * x)`, which would repeat `x` and
+                // double the source at every nesting level.
+                UnaryOp::Sqr => format!("ocl_sqr({x})"),
+                UnaryOp::Recip => format!("(1.0f / {x})"),
+                UnaryOp::Sqrt => format!("sqrt({x})"),
+                UnaryOp::Rsqrt => format!("rsqrt({x})"),
+                UnaryOp::Exp => format!("exp({x})"),
+                UnaryOp::Log => format!("log({x})"),
+                other => return Err(refuse(format!("unary op not supported: {other:?}"))),
+            }
+        }
         other => return Err(refuse(format!("expression node not supported: {other:?}"))),
     })
 }
@@ -111,6 +127,9 @@ impl Backend for OpenClC {
         // Without this a compiler may fuse a*b+c into one rounding, so results
         // would differ from the unfused reference and between vendors.
         s.push_str("#pragma OPENCL FP_CONTRACT OFF\n\n");
+        if body.contains("ocl_sqr(") {
+            s.push_str("inline float ocl_sqr(float x) { return x * x; }\n\n");
+        }
         s.push_str(&format!("__kernel void {name}(\n"));
         for i in 0..plan.n_inputs {
             s.push_str(&format!("    __global const float* in{i},\n"));

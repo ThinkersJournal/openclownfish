@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.9
+
+- Emitter: abs, sqr, recip, sqrt, rsqrt, exp, log with device differential tests (X2).
+
 ## 0.0.8
 
 - X1 v1: OPENCL_C frontend lifts elementwise OpenCL C kernels to the IR (feature parse); emitter accepts Vectorized plans.
