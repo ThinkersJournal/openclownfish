@@ -9,11 +9,11 @@ CireSnave goal (2026-10-30, verbatim): *"so we can really test the limits of eve
 - Branch `x2-emitter` (worktree `C:\Projects\openclownfish-wt-x2`) is stacked on `c4-program-kernel`: v1 emitter crate `openclownfish-clc` + device differential test, 0.0.7 proposed. NOT pushed until #7 merges; then `git rebase --onto origin/main <old c4 tip 2235775>`, push, [READY]. After merge: remove worktree, delete branch via API.
 - Findings to send the Unpopped lane (design note section 7): the f64 oracle models fused a*b+c, `unpopped-cpu-c` emits unfused C; they differ by 2 ULP.
 - PM ruling: the desktop rig dual-boots (Windows OR Linux). H1 results are labelled with OS and booted state; the other OS stays UNVERIFIED until it boots. Metal/Triton/Mojo parked after all other backends.
-- Unpopped 0.35 (tree-sitter 0.27, breaking) is coming; X1 builds against it. Emitter uses 0.34.13 from crates.io.
+- Emitter builds and passes on unpopped/unpopped-vocab 0.35.0 (crates.io, published 2026-10-31); `convert` is not enabled, so no tree-sitter yet. X1 will need tree-sitter 0.27.
 
 ## Next (unblocked, start without asking)
 1. Broaden X2: more unary/binary ops (Abs, Sqrt, Max, Min, Select), f64/ints with `cl_khr_fp64` gating, Strided schedule; each with a device differential.
-2. X1 parser once Unpopped 0.35 is published.
+2. X1 parser (Unpopped 0.35 is published).
 3. H1 on the rig per boot (needs the PM/CireSnave, board 329). Laptop done.
 
 ## Rules that bite here

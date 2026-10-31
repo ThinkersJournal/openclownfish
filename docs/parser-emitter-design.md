@@ -91,7 +91,7 @@ operation ("unfused") and with Unpopped's f64 oracle. Largest distance in ULP:
 - Every stack honoured `#pragma OPENCL FP_CONTRACT OFF`: a*b+c matches the unfused result exactly.
 - The oracle disagrees with unfused a*b+c by 2 ULP on all three. The oracle evaluates in f64 and rounds
   once, which is what a fused multiply-add gives, so it models fused arithmetic for compound bodies
-  while `unpopped-cpu-c` emits unfused C. Reported to the Unpopped lane as a finding, not changed here.
+  while `unpopped-cpu-c` emits unfused C. The Unpopped lane confirms this is documented behaviour (`oracle.rs` names round-once vs per-op rounding as the residual for compound bodies): single-op bodies compare BitExact, compound bodies against an unfused host reference or in tolerant mode.
 - Division is within 1 ULP on the two GPU stacks and exact on the CPU stack; the test allows 3 (OpenCL's
   default permits 2.5). Correctly rounded division would need `-cl-fp32-correctly-rounded-divide-sqrt`
   where the device offers it; not used in v1.
