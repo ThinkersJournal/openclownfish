@@ -14,5 +14,5 @@ Statuses: `open`, `doing`, `done`, `held`. Updated with every PR.
 | C3 | Safe layer part 1: `Context`, `Queue`, `Buffer` (bounds-checked blocking read/write, `finish`); round trip tested on every device here | done (#6, 0.0.5) |
 | C4 | Safe layer part 2: `Program` (build log surfaced per device), `Kernel`, argument setting, NDRange launch, `Event` profiling; vector add checked on every device here | doing (PR c4-program-kernel, 0.0.6) |
 | X1 | OpenCL C parser into Unpopped's IR (contract: `Unpopped/docs/parser-emitter-ownership-map.md`, ROADMAP 6.7) | design note `docs/parser-emitter-design.md`; after X2 |
-| X2 | OpenCL C emitter from Unpopped's IR | design note written; next, after the safe layer |
+| X2 | OpenCL C emitter from Unpopped's IR | v1 emitter (`openclownfish-clc`: f32 contiguous elementwise, + - * / neg) running on 3 laptop devices; broaden next (PR x2-emitter, 0.0.7 proposed) |
 | F1 | Fuel OpenCL backend, designed with the Fuel lane (Fuel repo not edited here) | held; below Rockfish, Bonefish, Vulkane |
