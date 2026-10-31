@@ -108,13 +108,20 @@ fn data(n: usize, which: usize) -> Vec<f32> {
         .collect()
 }
 
+/// 257 is not a multiple of any common vector width (Scalar schedule); 256 is
+/// (Vectorized schedule).
 #[test]
 fn emitted_kernels_agree_with_the_oracle_on_every_device() {
+    for n_el in [257, 256] {
+        run_on_every_device(n_el);
+    }
+}
+
+fn run_on_every_device(n_el: usize) {
     let Ok(rt) = Runtime::load() else { return };
     let Ok(platforms) = rt.platforms() else {
         return;
     };
-    const N: usize = 257; // not a multiple of any common work-group size
     let (mut ran, mut skipped) = (0, 0);
     for p in platforms {
         let Ok(devices) = p.devices() else { continue };
@@ -131,7 +138,7 @@ fn emitted_kernels_agree_with_the_oracle_on_every_device() {
             };
             let queue = ctx.create_queue().unwrap();
             for c in cases() {
-                let desc = OperandDesc::new(1, &[N as i64], &[1], ElementKind::F32, 256);
+                let desc = OperandDesc::new(1, &[n_el as i64], &[1], ElementKind::F32, 256);
                 let mut operands = vec![desc; c.n_inputs];
                 operands.push(desc);
                 let key = structure_key(c.cat, &operands, ArchSku::Sm89);
@@ -144,35 +151,35 @@ fn emitted_kernels_agree_with_the_oracle_on_every_device() {
                     ),
                 };
                 let mut k = prog.kernel(&kernel.name).unwrap();
-                let inputs: Vec<Vec<f32>> = (0..c.n_inputs).map(|w| data(N, w)).collect();
+                let inputs: Vec<Vec<f32>> = (0..c.n_inputs).map(|w| data(n_el, w)).collect();
                 let bufs: Vec<_> = inputs
                     .iter()
                     .map(|v| {
-                        let b = ctx.create_buffer(N * 4).unwrap();
+                        let b = ctx.create_buffer(n_el * 4).unwrap();
                         queue.write_buffer(&b, 0, &bytes(v)).unwrap();
                         b
                     })
                     .collect();
-                let out = ctx.create_buffer(N * 4).unwrap();
+                let out = ctx.create_buffer(n_el * 4).unwrap();
                 queue
-                    .write_buffer(&out, 0, &bytes(&vec![f32::NAN; N]))
+                    .write_buffer(&out, 0, &bytes(&vec![f32::NAN; n_el]))
                     .unwrap();
                 for (i, b) in bufs.iter().enumerate() {
                     k.set_arg_buffer(i as u32, b).unwrap();
                 }
                 k.set_arg_buffer(c.n_inputs as u32, &out).unwrap();
-                k.set_arg_i64(c.n_inputs as u32 + 1, N as i64).unwrap();
-                // SAFETY: the kernel guards `i < n` and every buffer holds N floats.
-                let ev = unsafe { queue.launch(&k, &[N], None) }.unwrap();
+                k.set_arg_i64(c.n_inputs as u32 + 1, n_el as i64).unwrap();
+                // SAFETY: the kernel guards `i < n` and every buffer holds n_el floats.
+                let ev = unsafe { queue.launch(&k, &[n_el], None) }.unwrap();
                 ev.wait().unwrap();
-                let mut raw = vec![0u8; N * 4];
+                let mut raw = vec![0u8; n_el * 4];
                 queue.read_buffer(&out, 0, &mut raw).unwrap();
                 let got = floats(&raw);
 
                 let plan = build_plan(&c.op, &key);
                 let tb: Vec<TypedBuffer> = inputs
                     .iter()
-                    .map(|v| TypedBuffer::from_f32(&[N as i64], v))
+                    .map(|v| TypedBuffer::from_f32(&[n_el as i64], v))
                     .collect();
                 let want = evaluate(&plan, &operands, &tb, &[])
                     .into_iter()
@@ -182,7 +189,7 @@ fn emitted_kernels_agree_with_the_oracle_on_every_device() {
                 // Host f32 arithmetic, rounded after every operation: what an
                 // unfused device must produce. The oracle works in f64 and rounds
                 // once, so it can differ from this on a*b+c (double rounding).
-                let host: Vec<f32> = (0..N)
+                let host: Vec<f32> = (0..n_el)
                     .map(|i| {
                         let x = |k: usize| inputs[k][i];
                         match c.name {

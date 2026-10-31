@@ -4,16 +4,15 @@ You own **OpenCLownfish**: safe Rust OpenCL interface, OpenCL C parser+emitter f
 
 CireSnave goal (2026-10-30, verbatim): *"so we can really test the limits of every manufacturer's software stack."* Do NOT claim macOS support (row M1).
 
-## State at 2026-10-30
-- main d7df6af = 0.0.5; PR #7 (C4 Program/Kernel/launch, 0.0.6) at the PM gate.
-- Branch `x2-emitter` (worktree `C:\Projects\openclownfish-wt-x2`) is stacked on `c4-program-kernel`: v1 emitter crate `openclownfish-clc` + device differential test, 0.0.7 proposed. NOT pushed until #7 merges; then `git rebase --onto origin/main <old c4 tip 2235775>`, push, [READY]. After merge: remove worktree, delete branch via API.
-- Findings to send the Unpopped lane (design note section 7): the f64 oracle models fused a*b+c, `unpopped-cpu-c` emits unfused C; they differ by 2 ULP.
+## State at 2026-10-31
+- main 6a68cb5 = 0.0.7: loader, safe layer C3/C4, v1 emitter `openclownfish-clc` (X2).
+- Branch `x1-parser` (worktree `C:\Projects\openclownfish-wt-x1`): X1 v1 parser (`OPENCL_C` Frontend over tree-sitter-cpp, feature `parse`), emitter now also accepts Vectorized plans (element-counted), 0.0.8 proposed. After merge: remove worktree, delete branch via API.
+- Asked the Unpopped lane for a per-Frontend math-name table; until then only fabs/abs/fmax/fmin lift.
 - PM ruling: the desktop rig dual-boots (Windows OR Linux). H1 results are labelled with OS and booted state; the other OS stays UNVERIFIED until it boots. Metal/Triton/Mojo parked after all other backends.
-- Emitter builds and passes on unpopped/unpopped-vocab 0.35.0 (crates.io, published 2026-10-31); `convert` is not enabled, so no tree-sitter yet. X1 will need tree-sitter 0.27.
 
 ## Next (unblocked, start without asking)
 1. Broaden X2: more unary/binary ops (Abs, Sqrt, Max, Min, Select), f64/ints with `cl_khr_fp64` gating, Strided schedule; each with a device differential.
-2. X1 parser (Unpopped 0.35 is published).
+2. X1 beyond elementwise (reduction, scan) once the name table lands; N-D `get_global_id(d)` to `Coord(d)`.
 3. H1 on the rig per boot (needs the PM/CireSnave, board 329). Laptop done.
 
 ## Rules that bite here

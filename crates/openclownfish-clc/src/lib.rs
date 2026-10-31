@@ -5,6 +5,11 @@
 //! inputs, finite exactly-representable constants, `+ - * /` and negation.
 //! Everything else is a typed refusal, never an approximation.
 
+#[cfg(feature = "parse")]
+mod parse;
+#[cfg(feature = "parse")]
+pub use parse::{OPENCL_C, parse_opencl_c};
+
 use unpopped::backend::{Backend, DtypeSupport, GeneratedKernel, LowerError};
 use unpopped::ir::{ScalarExpr, UnaryOp};
 use unpopped::plan::{KernelPlan, Schedule};
@@ -80,10 +85,16 @@ impl Backend for OpenClC {
                 ),
             });
         }
-        if !matches!(plan.schedule, Schedule::Scalar) {
+        // `Vectorized` is a width hint for backends that vectorise; this kernel
+        // is element-counted (`effective_count_width` stays 1), which is correct
+        // for any contiguous elementwise plan.
+        if !matches!(
+            plan.schedule,
+            Schedule::Scalar | Schedule::Vectorized { .. }
+        ) {
             return Err(LowerError::UnsupportedSchedule {
                 detail: format!(
-                    "opencl_c v1: contiguous scalar schedule only, got {:?}",
+                    "opencl_c v1: contiguous scalar or vectorized schedule only, got {:?}",
                     plan.schedule
                 ),
             });
