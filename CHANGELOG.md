@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.23
+
+- Test: no tracked text file may contain a raw NUL byte (scans the git index; population control; seen red on an injected NUL).
+
 ## 0.0.22
 
 - Emitter: strided offsets and the coordinate unravel come from unpopped::cfamily (strided_offset_expr, unravel_decomp) instead of local copies; emitted kernels are unchanged and every device differential still passes.
