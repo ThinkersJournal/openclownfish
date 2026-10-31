@@ -8,7 +8,7 @@
 //! (NaN-propagating) and `FmaxIeee`/`FminIeee` (NaN-suppressing), `Pow`, the six
 //! comparisons (1.0 or 0.0) and `Select`. Everything else is a typed refusal,
 //! never an approximation. Reductions (`Schedule::Reduction`) are served as a
-//! serial per-output fold over any axis set, one input, a fused post-expression over the finalized fold,
+//! serial per-output fold over any axis set, any number of inputs, a fused post-expression over the finalized fold,
 //! and scans (`Schedule::Scan`) as a serial per-row fold of the innermost axis;
 //! `lower_variants` also offers a work-group-per-row `blockscan` variant of each scan.
 //!
@@ -122,6 +122,8 @@ struct Cx<'a> {
     /// A reduction post-expression: `Reduced(0)` is the finalized fold `red`, and
     /// no input is in scope (the reduced axes are gone).
     reduced: bool,
+    /// A reduction fold body: input `k` is read at its own fold offset `i{k}`.
+    fold: bool,
 }
 
 /// The strided schedule's compile-time facts, from the structure key.
@@ -134,6 +136,9 @@ struct StridedCx {
 /// How input `i` is read: by linear index, through its strided offset, or from
 /// the value hoisted out of the loop when every axis is broadcast.
 fn input_leaf(i: u8, cx: Cx<'_>) -> String {
+    if cx.fold {
+        return format!("in{i}[i{i}]");
+    }
     match cx.strided {
         None => format!("in{i}[i]"),
         Some(st) if st.fully_bcast[usize::from(i)] => format!("h{i}"),
@@ -393,10 +398,11 @@ struct ReduceCx {
     kept: Vec<usize>,
     /// The fused post-expression, over `Reduced(0)` (the post-`Mean` fold).
     post: ScalarExpr,
+    n_inputs: usize,
 }
 
 /// The reduction plan's facts, or why this emitter cannot serve it. Scope (v1):
-/// one input, any post-expression over `Reduced(0)` and constants, `Sum`/`Mean`/`Prod`/`Max`/`Min`, no
+/// any number of inputs, any post-expression over `Reduced(0)` and constants, `Sum`/`Mean`/`Prod`/`Max`/`Min`, no
 /// integer `Mean` (it is a float-output op, unrepresentable in one dtype).
 fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError> {
     let Access::Reduction {
@@ -409,8 +415,8 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
     else {
         return Err(refuse("reduction schedule without a reduction access"));
     };
-    if plan.n_inputs != 1 {
-        return Err(refuse("reductions take a single input"));
+    if plan.n_inputs == 0 {
+        return Err(refuse("a reduction needs an input"));
     }
     if t.int && matches!(op, ReduceOp::Mean) {
         return Err(refuse("integer Mean"));
@@ -431,6 +437,7 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
         reduced,
         kept,
         post: post.clone(),
+        n_inputs: usize::from(plan.n_inputs),
     })
 }
 
@@ -442,8 +449,10 @@ fn emit_reduction_params(s: &mut String, rank: usize, rc: &ReduceCx) {
     for d in 0..rank {
         s.push_str(&format!("    long shape{d},\n"));
     }
-    for d in 0..rank {
-        s.push_str(&format!("    long s0_{d},\n"));
+    for k in 0..rc.n_inputs {
+        for d in 0..rank {
+            s.push_str(&format!("    long s{k}_{d},\n"));
+        }
     }
     for d in 0..n_so {
         s.push_str(&format!("    long so_{d},\n"));
@@ -463,6 +472,17 @@ fn reduction_post(rc: &ReduceCx, cx: Cx<'_>) -> Result<String, LowerError> {
             ..cx
         },
     )
+}
+
+/// Declares each input's fold offset `i{k}` from its `base{k}` and the reduced
+/// coordinates `cr{r}`, which must be in scope.
+fn emit_fold_offsets(s: &mut String, rc: &ReduceCx, indent: &str) {
+    for k in 0..rc.n_inputs {
+        let idx = sum(std::iter::once(format!("base{k}"))
+            .chain(rc.reduced.iter().map(|r| format!("cr{r}*s{k}_{r}")))
+            .collect());
+        s.push_str(&format!("{indent}long i{k} = {idx};\n"));
+    }
 }
 
 /// An index expression: the terms added, or `0` when there are none.
@@ -487,7 +507,6 @@ fn emit_reduction_addressing(s: &mut String, rc: &ReduceCx) {
         |a| format!("shape{a}"),
         false,
     ));
-    let base = sum(rc.kept.iter().map(|a| format!("ck{a}*s0_{a}")).collect());
     let oo = sum(rc
         .kept
         .iter()
@@ -500,10 +519,11 @@ fn emit_reduction_addressing(s: &mut String, rc: &ReduceCx) {
             }
         })
         .collect());
-    s.push_str(&format!(
-        "    long base = {base};
-    long oo = {oo};\n"
-    ));
+    for k in 0..rc.n_inputs {
+        let base = sum(rc.kept.iter().map(|a| format!("ck{a}*s{k}_{a}")).collect());
+        s.push_str(&format!("    long base{k} = {base};\n"));
+    }
+    s.push_str(&format!("    long oo = {oo};\n"));
 }
 
 /// The rest of a reduction kernel after `out`. One work item per output element
@@ -564,13 +584,8 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
             "    for (long cr{r} = 0; cr{r} < shape{r}; ++cr{r}) {{\n"
         ));
     }
-    let idx = sum(std::iter::once("base".to_owned())
-        .chain(rc.reduced.iter().map(|r| format!("cr{r}*s0_{r}")))
-        .collect());
-    s.push_str(&format!(
-        "    long i = {idx};
-    {step}\n"
-    ));
+    emit_fold_offsets(s, rc, "    ");
+    s.push_str(&format!("    {step}\n"));
     for _ in &rc.reduced {
         s.push_str("    }\n");
     }
@@ -799,13 +814,9 @@ fn emit_blockreduce_body(
         |a| format!("shape{a}"),
         false,
     ));
-    let idx = std::iter::once("base".to_owned())
-        .chain(rc.reduced.iter().map(|r| format!("cr{r}*s0_{r}")))
-        .collect::<Vec<_>>()
-        .join(" + ");
+    emit_fold_offsets(s, rc, "        ");
     s.push_str(&format!(
-        "        long i = {idx};
-        acc = ocf_comb(acc, {body});
+        "        acc = ocf_comb(acc, {body});
     }}
     buf[lid] = acc;
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -979,6 +990,7 @@ impl Backend for OpenClC {
             t,
             strided: None,
             reduced: false,
+            fold: !is_scan,
         };
         let (variant, op, body, sc, rc);
         if is_scan {
@@ -1028,7 +1040,9 @@ impl Backend for OpenClC {
         }
         s.push_str(&block_prelude(op, t));
         s.push_str(&format!("__kernel void {name}(\n"));
-        s.push_str(&format!("    __global const {}* in0,\n", t.c));
+        for i in 0..plan.n_inputs {
+            s.push_str(&format!("    __global const {}* in{i},\n", t.c));
+        }
         s.push_str(&format!("    __global {}* out,\n", t.c));
         let usage = if let (Some(sc), None) = (&sc, &rc) {
             emit_blockscan_body(&mut s, sc, t, &body);
@@ -1042,8 +1056,8 @@ impl Backend for OpenClC {
             emit_blockreduce_body(&mut s, usize::from(plan.key.rank), rc, t, &body, &post);
             "one work-group per output element: global = n_out * B, local = B, B a power \
              of two no larger than the device's work-group limit (default 64; build with \
-             -D OCF_BLOCK=B to change it). Arguments as the serial reduction: in0, out, \
-             shape{d}, s0_{d}, so_{j}, n_out. Each work item folds a contiguous chunk of \
+             -D OCF_BLOCK=B to change it). Arguments as the serial reduction: in{k}, out, \
+             shape{d}, s{k}_{d} per input, so_{j}, n_out. Each work item folds a contiguous chunk of \
              the row-major reduced extent, then a neighbour-pair tree combines the \
              chunks in order. Local memory: B elements of the compute type."
         };
@@ -1127,6 +1141,7 @@ impl Backend for OpenClC {
             t,
             strided: strided.as_ref(),
             reduced: false,
+            fold: reduction.is_some(),
         };
         // A scan folds its per-element pre-map; the epilogue is the identity.
         let body = expr(scan.as_ref().map_or(plan.body, |(_, pre)| pre), cx)?;
