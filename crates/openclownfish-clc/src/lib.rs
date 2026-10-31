@@ -7,7 +7,8 @@
 //! abs, square, reciprocal, sqrt, rsqrt, exp and log, `Max`/`Min`
 //! (NaN-propagating) and `FmaxIeee`/`FminIeee` (NaN-suppressing), `Pow`, the six
 //! comparisons (1.0 or 0.0) and `Select`. Everything else is a typed refusal,
-//! never an approximation.
+//! never an approximation. Reductions (`Schedule::Reduction`) are served as a
+//! serial per-output fold over any axis set, one input, identity post-expression.
 //!
 //! `i32` and `i64` plans are served for the subset the IR allows on integers:
 //! wrapping `+ - *` and the bitwise and shift operators.
@@ -22,7 +23,7 @@ mod parse;
 pub use parse::{OPENCL_C, parse_opencl_c};
 
 use unpopped::backend::{Backend, DtypeSupport, GeneratedKernel, LowerError};
-use unpopped::ir::{BinaryOp, ReadIndex, ScalarExpr, UnaryOp, View, WriteIndex};
+use unpopped::ir::{Access, BinaryOp, ReadIndex, ReduceOp, ScalarExpr, UnaryOp, View, WriteIndex};
 use unpopped::plan::{KernelPlan, Schedule};
 use unpopped_vocab::{ElementKind, TargetId};
 
@@ -371,6 +372,213 @@ fn offset_expr(plan: &KernelPlan<'_>, operand: usize, stride: &str, rank: usize)
 /// Baracuda's CUDA strided kernels use (`shape{d}`, `s{i}_{d}`, `so_{d}`, `n`),
 /// then a one-work-item-per-element body that unravels the linear index
 /// row-major (last axis fastest) and reads each operand through its strides.
+/// What a reduction kernel folds: the op and which input axes it removes.
+struct ReduceCx {
+    op: ReduceOp,
+    keepdim: bool,
+    /// Ascending input axes folded away; the rest are kept.
+    reduced: Vec<usize>,
+    kept: Vec<usize>,
+}
+
+/// The reduction plan's facts, or why this emitter cannot serve it. Scope (v1):
+/// one input, identity post-expression, `Sum`/`Mean`/`Prod`/`Max`/`Min`, no
+/// integer `Mean` (it is a float-output op, unrepresentable in one dtype).
+fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError> {
+    let Access::Reduction {
+        op,
+        axes,
+        keepdim,
+        post,
+        ..
+    } = plan.access
+    else {
+        return Err(refuse("reduction schedule without a reduction access"));
+    };
+    if plan.n_inputs != 1 {
+        return Err(refuse("reductions take a single input"));
+    }
+    if !matches!(post, ScalarExpr::Reduced(0)) {
+        return Err(refuse("fused reduction post-expressions"));
+    }
+    if t.int && matches!(op, ReduceOp::Mean) {
+        return Err(refuse("integer Mean"));
+    }
+    let rank = usize::from(plan.key.rank);
+    if rank == 0 {
+        return Err(refuse("rank-0 reductions"));
+    }
+    let reduced: Vec<usize> = if axes.is_empty() {
+        vec![rank - 1]
+    } else {
+        (0..rank).filter(|&d| axes.is_set(d as u8)).collect()
+    };
+    let kept = (0..rank).filter(|d| !reduced.contains(d)).collect();
+    Ok(ReduceCx {
+        op: *op,
+        keepdim: *keepdim,
+        reduced,
+        kept,
+    })
+}
+
+/// The rest of a reduction kernel after `out`: `shape{d}` per input axis,
+/// `s0_{d}` input strides, `so_{j}` output strides (per input axis with
+/// `keepdim`, else per kept axis), then `n_out`, in Baracuda's argument order.
+/// One work item per output element folds the reduced axes serially, in
+/// row-major order over them, in the element type.
+fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str) {
+    let n_so = if rc.keepdim { rank } else { rc.kept.len() };
+    for d in 0..rank {
+        s.push_str(&format!(
+            "    long shape{d},
+"
+        ));
+    }
+    for d in 0..rank {
+        s.push_str(&format!(
+            "    long s0_{d},
+"
+        ));
+    }
+    for d in 0..n_so {
+        s.push_str(&format!(
+            "    long so_{d},
+"
+        ));
+    }
+    s.push_str(
+        "    long n_out)
+{
+",
+    );
+    s.push_str(
+        "    long o = (long)get_global_id(0);
+    if (o >= n_out) { return; }
+",
+    );
+    s.push_str(
+        "    long lin = o;
+",
+    );
+    for &a in rc.kept.iter().rev() {
+        s.push_str(&format!(
+            "    long ck{a} = lin % shape{a}; lin /= shape{a};
+"
+        ));
+    }
+    let sum = |terms: Vec<String>| {
+        if terms.is_empty() {
+            "0".to_owned()
+        } else {
+            terms.join(" + ")
+        }
+    };
+    let base = sum(rc.kept.iter().map(|a| format!("ck{a}*s0_{a}")).collect());
+    let oo = sum(rc
+        .kept
+        .iter()
+        .enumerate()
+        .map(|(j, a)| {
+            if rc.keepdim {
+                format!("ck{a}*so_{a}")
+            } else {
+                format!("ck{a}*so_{j}")
+            }
+        })
+        .collect());
+    s.push_str(&format!(
+        "    long base = {base};
+    long oo = {oo};
+"
+    ));
+    let ty = t.c;
+    let u = t.uns;
+    let (init, step) = match rc.op {
+        ReduceOp::Sum | ReduceOp::Mean => (
+            format!("({ty})0"),
+            if t.int {
+                format!("acc = ({ty})(({u})acc + ({u})({body}));")
+            } else {
+                format!("acc += {body};")
+            },
+        ),
+        ReduceOp::Prod => (
+            format!("({ty})1"),
+            if t.int {
+                format!("acc = ({ty})(({u})acc * ({u})({body}));")
+            } else {
+                format!("acc *= {body};")
+            },
+        ),
+        ReduceOp::Max | ReduceOp::Min => {
+            let max = matches!(rc.op, ReduceOp::Max);
+            let cmp = if max { ">" } else { "<" };
+            // An empty reduced extent leaves the monoid identity (dtype extreme
+            // for integers, 0 for floats), as Baracuda's emitter does.
+            let seed = match (t.tag, max) {
+                ("i32", true) => "(-2147483647 - 1)".to_owned(),
+                ("i32", false) => "2147483647".to_owned(),
+                ("i64", true) => "(-9223372036854775807L - 1L)".to_owned(),
+                ("i64", false) => "9223372036854775807L".to_owned(),
+                _ => format!("({ty})0"),
+            };
+            (
+                seed,
+                format!(
+                    "{{ {ty} e = {body}; acc = has ? ((e != e || e {cmp} acc) ? e : acc) : e; has = 1; }}"
+                ),
+            )
+        }
+    };
+    s.push_str(&format!(
+        "    {ty} acc = {init};
+"
+    ));
+    if matches!(rc.op, ReduceOp::Max | ReduceOp::Min) {
+        s.push_str(
+            "    int has = 0;
+",
+        );
+    }
+    for &r in &rc.reduced {
+        s.push_str(&format!(
+            "    for (long cr{r} = 0; cr{r} < shape{r}; ++cr{r}) {{
+"
+        ));
+    }
+    let idx = sum(std::iter::once("base".to_owned())
+        .chain(rc.reduced.iter().map(|r| format!("cr{r}*s0_{r}")))
+        .collect());
+    s.push_str(&format!(
+        "    long i = {idx};
+    {step}
+"
+    ));
+    for _ in &rc.reduced {
+        s.push_str(
+            "    }
+",
+        );
+    }
+    let fin = if matches!(rc.op, ReduceOp::Mean) {
+        let div = rc
+            .reduced
+            .iter()
+            .map(|r| format!("shape{r}"))
+            .collect::<Vec<_>>()
+            .join(" * ");
+        format!("acc / ({ty})({div})")
+    } else {
+        "acc".to_owned()
+    };
+    s.push_str(&format!(
+        "    out[oo] = {fin};
+}}
+"
+    ));
+}
+
 fn emit_strided_body(
     s: &mut String,
     plan: &KernelPlan<'_>,
@@ -470,8 +678,13 @@ impl Backend for OpenClC {
         // `Vectorized` is a width hint for backends that vectorise; this kernel
         // is element-counted (`effective_count_width` stays 1), which is correct
         // for any contiguous elementwise plan.
+        let mut reduction = None;
         let strided = match plan.schedule {
             Schedule::Scalar | Schedule::Vectorized { .. } => None,
+            Schedule::Reduction { .. } => {
+                reduction = Some(reduction_facts(plan, t)?);
+                None
+            }
             Schedule::Strided => Some(strided_facts(plan)?),
             other => {
                 return Err(LowerError::UnsupportedSchedule {
@@ -487,7 +700,14 @@ impl Backend for OpenClC {
             strided: strided.as_ref(),
         };
         let body = expr(plan.body, cx)?;
-        let kind = if strided.is_some() {
+        let kind = if let Some(rc) = &reduction {
+            let ax: String = rc.reduced.iter().map(|r| r.to_string()).collect();
+            format!(
+                "_reduce_{}_ax{ax}{}",
+                format!("{:?}", rc.op).to_lowercase(),
+                if rc.keepdim { "_kd" } else { "" }
+            )
+        } else if strided.is_some() {
             format!("_strided_r{}", plan.key.rank)
         } else {
             String::new()
@@ -522,6 +742,10 @@ impl Backend for OpenClC {
         }
         s.push_str(&format!("    __global {}* out,\n", t.c));
         match &strided {
+            None if reduction.is_some() => {
+                let rc = reduction.as_ref().unwrap();
+                emit_reduction_body(&mut s, usize::from(plan.key.rank), rc, t, &body);
+            }
             None => {
                 s.push_str("    long n)\n{\n");
                 s.push_str("    long i = (long)get_global_id(0);\n");

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.17
+
+- Emitter: serial per-output reductions (Sum, Mean, Prod, Max, Min; f32, i32, i64; f64 is emitted but has no device differential yet) over any axis set, with or without keepdim, in Baracuda's argument convention; 100 cases bit-exact (Mean within 1 ULP) on every device (X2).
+
 ## 0.0.16
 
 - Docs: HANDOFF rewritten for the next session.
