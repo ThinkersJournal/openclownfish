@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.29
+
+- Emitter: reductions over several inputs are served (dot product, weighted Max/Min, a dot with a fused post), by the serial kernel and the `blockreduce` variant. Kernel arguments: the input pointers, `out`, `shape{d}`, then `s{k}_{d}` for every input `k` in turn, `so_{j}`, `n_out`; each input is read through its own strides, so a broadcast input (stride 0) needs only its smaller buffer. A single-input reduction takes the same arguments as before. The cases (f32/f64/i32/i64, two shapes, four axis sets, dense and broadcast second input, serial and block sizes 8 and 32) agree bit for bit with the oracle on all 3 laptop devices (X2).
+
 ## 0.0.28
 
 - Emitter: reductions with a fused post-expression are served, by the serial kernel and the `blockreduce` variant alike. The post reads the finalized fold (after `Mean`'s division) as `Reduced(0)`, may use constants, and is spelled in the element type (`norm2 = sqrt(sum(x*x))`, scale-and-offset, integer `red*red`). An input in a post is refused (Unpopped's plan gate rejects it first). 144 cases per device (serial and block sizes 8 and 32, f32/f64/i32/i64, two shapes, four axis sets) agree with the oracle on all 3 laptop devices; posts that round (`sqrt`, `Mean`) are compared within 4 ulp, the rest bit for bit (X2).
