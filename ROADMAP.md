@@ -13,6 +13,6 @@ Statuses: `open`, `doing`, `done`, `held`. Updated with every PR.
 | M1 | macOS: GitHub macOS runner exposes an OpenCL platform but `clGetDeviceIDs` returns -30 (`CL_INVALID_VALUE`), so no devices; measured in CI run 41113987171 (2026-10-30). macOS support is NOT claimed; revisit on real Apple hardware | open (finding) |
 | C3 | Safe layer part 1: `Context`, `Queue`, `Buffer` (bounds-checked blocking read/write, `finish`); round trip tested on every device here | done (#6, 0.0.5) |
 | C4 | Safe layer part 2: `Program` (build log surfaced per device), `Kernel`, argument setting, NDRange launch, `Event` profiling; vector add checked on every device here | doing (PR c4-program-kernel, 0.0.6) |
-| X1 | OpenCL C parser into Unpopped's IR (contract: `Unpopped/docs/parser-emitter-ownership-map.md`, ROADMAP 6.7) | design note `docs/parser-emitter-design.md`; after X2 |
+| X1 | OpenCL C parser into Unpopped's IR (contract: `Unpopped/docs/parser-emitter-ownership-map.md`, ROADMAP 6.7) | v1 in `openclownfish-clc` (feature `parse`): elementwise kernels lift via `OPENCL_C`; math-name table gap pending Unpopped (PR x1-parser, 0.0.8 proposed) |
 | X2 | OpenCL C emitter from Unpopped's IR | v1 emitter (`openclownfish-clc`: f32 contiguous elementwise, + - * / neg) running on 3 laptop devices; broaden next (PR x2-emitter, 0.0.7 proposed) |
 | F1 | Fuel OpenCL backend, designed with the Fuel lane (Fuel repo not edited here) | held; below Rockfish, Bonefish, Vulkane |

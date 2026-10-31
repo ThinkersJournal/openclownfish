@@ -25,14 +25,17 @@ crates.io, never the reverse and never by path.
 
 ## 3. Parser (X1)
 
-- **Grammar:** OpenCL C 1.2 to 3.0 is C99 plus address-space qualifiers, vector types, built-ins and
-  `__kernel`. crates.io has no `tree-sitter-opencl` (API: "does not exist"; control: `tree-sitter-c`
-  0.24.2, `tree-sitter-cpp` 0.23.4 and `tree-sitter-cuda` 0.21.2 resolve through the same query). Use
-  `tree-sitter-c`: qualifiers parse as unknown identifiers or attribute-like tokens, so the frontend
-  must recognise them itself. Verify on real kernels before committing to this; the fallback is a
-  small hand-written recogniser for the kernel subset, as `lift.rs` was.
-- **Plan:** `pub const OPENCL_C: Frontend = Frontend::new("opencl-c", "__kernel", RESIDUE, ..)`
-  plus `parse_opencl_c`. Reuse `lift*_with`, so elementwise, reduction and scan come for free.
+- **Grammar (as built):** `tree-sitter-cpp`, not `tree-sitter-c`. Unpopped's shared walker reads a
+  subscript's `indices` field, which only the C++ grammar has (the C grammar calls it `index`); with the C
+  grammar every kernel came back `NotElementwise`. OpenCL qualifiers (`__kernel`, `__global`) parse as
+  tolerated `ERROR` identifiers and do not stop the walker. No `tree-sitter-opencl` exists on crates.io.
+- **Plan (as built):** `OPENCL_C: Frontend` plus `parse_opencl_c`, behind the default `parse` feature of
+  `openclownfish-clc`; reuses `lift_elementwise_with`. Buffers are named `in0, in1, ..` and `out`
+  (`with` a `ResourceMap` for other names). The index is a lone identifier (`size_t i = get_global_id(0)`);
+  `out[get_global_id(0)]` inline is refused as not elementwise.
+- **Known gap:** Unpopped's `unary_fn`/`binary_fn` table is fixed and CUDA-flavoured (`expf`, `sqrtf`),
+  not per frontend. OpenCL C has no `expf`; it overloads `exp`, `sqrt`, `pow`, so today only `fabs`,
+  `abs`, `fmax`, `fmin` lift, and the rest is `Unrecognized` (pinned by a test). Asked of the Unpopped lane.
 - **Residue (refused, never approximated):** `barrier`, `mem_fence`, `atomic_*`, `__local` buffers,
   `work_group_*` built-ins, `async_work_group_copy`, pipes, images/samplers, device-side enqueue,
   `printf`, `#pragma`. Each is a typed refusal naming the construct.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.8
+
+- X1 v1: OPENCL_C frontend lifts elementwise OpenCL C kernels to the IR (feature parse); emitter accepts Vectorized plans.
+
 ## 0.0.7
 
 - Added openclownfish-clc: v1 OpenCL C emitter (f32 contiguous elementwise) with a device-vs-oracle differential test (X2).
