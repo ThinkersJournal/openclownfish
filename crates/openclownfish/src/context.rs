@@ -81,7 +81,7 @@ impl Context {
     }
 
     /// Like [`Context::create_queue`] with `CL_QUEUE_PROFILING_ENABLE`, so
-    /// [`Event::duration_ns`] works for work enqueued on it.
+    /// [`crate::Event::duration_ns`] works for work enqueued on it.
     pub fn create_profiling_queue(&self) -> Result<Queue, Error> {
         self.queue(true)
     }
