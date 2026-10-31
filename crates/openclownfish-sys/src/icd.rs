@@ -8,12 +8,12 @@
 //!
 //! * **Linux and other Unix**: `*.icd` files, each holding one library name, in
 //!   `$OCL_ICD_VENDORS` (a directory, or one file) or `/etc/OpenCL/vendors`.
-//! * **Windows**: the Khronos registry key (`HKLM\SOFTWARE\Khronos\OpenCL\Vendors`
-//!   and its 32-bit view; a `DWORD` of 0 means enabled) and the `OpenCLDriverName`
-//!   value that GPU drivers write under each display adapter class key. Most
-//!   GPU drivers register only the second way, so reading the first alone misses
-//!   them. The registry is read by running `reg.exe`, which is part of Windows,
-//!   so no dependency is added.
+//! * **Windows**: the Khronos registry key (`HKLM\SOFTWARE\Khronos\OpenCL\Vendors`,
+//!   in both registry views; a `DWORD` of 0 means enabled) and the
+//!   `OpenCLDriverName` value that GPU drivers write under each display adapter
+//!   class key. Most GPU drivers register only the second way, so reading the
+//!   first alone misses them. The registry is read through the Windows registry
+//!   API (the `winreg` crate); no program is run.
 //!
 //! This is what the configuration says, not what the loader will do: a driver
 //! listed here may still be rejected by the loader (for example when its
@@ -45,46 +45,25 @@ pub struct IcdEntry {
     pub enabled: bool,
 }
 
-/// Parse the output of `reg query HKLM\SOFTWARE\Khronos\OpenCL\Vendors`: lines
-/// of `<library path>    REG_DWORD    0x0`. The path may contain spaces.
+/// A Khronos registry value: the value name is the library path and the
+/// `DWORD` is 0 when the driver is enabled.
 #[must_use]
-pub fn parse_khronos_reg(text: &str) -> Vec<IcdEntry> {
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim_end_matches('\r');
-            let (head, value) = line.rsplit_once("REG_DWORD")?;
-            let library = head.trim().to_owned();
-            let value = value.trim();
-            let n = value
-                .strip_prefix("0x")
-                .map_or_else(|| value.parse(), |h| u32::from_str_radix(h, 16))
-                .ok()?;
-            (!library.is_empty()).then_some(IcdEntry {
-                source: IcdSource::KhronosRegistry,
-                library,
-                enabled: n == 0,
-            })
-        })
-        .collect()
+pub fn khronos_entry(name: &str, value: u32) -> Option<IcdEntry> {
+    (!name.is_empty()).then(|| IcdEntry {
+        source: IcdSource::KhronosRegistry,
+        library: name.to_owned(),
+        enabled: value == 0,
+    })
 }
 
-/// Parse the output of `reg query <display class key> /s /v OpenCLDriverName`:
-/// lines of `OpenCLDriverName    REG_SZ    <library path>`.
+/// A display adapter's `OpenCLDriverName` value.
 #[must_use]
-pub fn parse_display_reg(text: &str) -> Vec<IcdEntry> {
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim_end_matches('\r').trim();
-            let rest = line.strip_prefix("OpenCLDriverName")?;
-            let (_, library) = rest.split_once("REG_SZ")?;
-            let library = library.trim().to_owned();
-            (!library.is_empty()).then_some(IcdEntry {
-                source: IcdSource::DisplayDriverKey,
-                library,
-                enabled: true,
-            })
-        })
-        .collect()
+pub fn display_entry(library: &str) -> Option<IcdEntry> {
+    (!library.is_empty()).then(|| IcdEntry {
+        source: IcdSource::DisplayDriverKey,
+        library: library.to_owned(),
+        enabled: true,
+    })
 }
 
 /// Parse an `.icd` file: the first non-blank, non-comment line is the library.
@@ -101,15 +80,41 @@ pub fn parse_icd_file(path: &str, contents: &str) -> Option<IcdEntry> {
     })
 }
 
+/// The registry reads. An absent key is an empty list, not an error: most
+/// machines have no Khronos key in the 32-bit view.
 #[cfg(windows)]
-fn reg_query(args: &[&str]) -> String {
-    // An absent key makes `reg` exit non-zero with nothing on stdout: no entries.
-    std::process::Command::new("reg")
-        .arg("query")
-        .args(args)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
+fn windows_icds() -> Vec<IcdEntry> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+
+    const KHRONOS: &str = r"SOFTWARE\Khronos\OpenCL\Vendors";
+    const DISPLAY_CLASS: &str =
+        r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let mut v = Vec::new();
+    for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+        let Ok(key) = hklm.open_subkey_with_flags(KHRONOS, KEY_READ | view) else {
+            continue;
+        };
+        for (name, _) in key.enum_values().filter_map(Result::ok) {
+            // A value that is not a DWORD is not a registration.
+            if let Ok(n) = key.get_value::<u32, _>(&name) {
+                v.extend(khronos_entry(&name, n));
+            }
+        }
+    }
+    if let Ok(class) = hklm.open_subkey_with_flags(DISPLAY_CLASS, KEY_READ) {
+        for adapter in class.enum_keys().filter_map(Result::ok) {
+            let Ok(adapter) = class.open_subkey_with_flags(&adapter, KEY_READ) else {
+                continue;
+            };
+            if let Ok(lib) = adapter.get_value::<String, _>("OpenCLDriverName") {
+                v.extend(display_entry(&lib));
+            }
+        }
+    }
+    v
 }
 
 /// Every driver the system configuration registers, in a stable order, with
@@ -118,20 +123,7 @@ fn reg_query(args: &[&str]) -> String {
 pub fn registered_icds() -> Vec<IcdEntry> {
     #[cfg(windows)]
     {
-        let mut v = Vec::new();
-        for key in [
-            r"HKLM\SOFTWARE\Khronos\OpenCL\Vendors",
-            r"HKLM\SOFTWARE\WOW6432Node\Khronos\OpenCL\Vendors",
-        ] {
-            v.extend(parse_khronos_reg(&reg_query(&[key])));
-        }
-        v.extend(parse_display_reg(&reg_query(&[
-            r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}",
-            "/s",
-            "/v",
-            "OpenCLDriverName",
-        ])));
-        v
+        windows_icds()
     }
     #[cfg(not(windows))]
     {
@@ -180,31 +172,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn khronos_key_with_spaces_and_a_disabled_entry() {
-        let text = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Khronos\\OpenCL\\Vendors\r\n    C:\\Program Files (x86)\\Intel\\bin\\intelocl64.dll    REG_DWORD    0x0\r\n    C:\\x\\off.dll    REG_DWORD    0x1\r\n\r\n";
-        let v = parse_khronos_reg(text);
-        assert_eq!(v.len(), 2, "{v:?}");
-        assert_eq!(
-            v[0].library,
-            r"C:\Program Files (x86)\Intel\bin\intelocl64.dll"
-        );
-        assert!(v[0].enabled);
-        assert!(!v[1].enabled);
-        // Control: the key header line is not an entry.
-        assert!(v.iter().all(|e| !e.library.starts_with("HKEY")));
+    fn khronos_values_with_spaces_and_a_disabled_entry() {
+        let on = khronos_entry(r"C:\Program Files (x86)\Intel\bin\intelocl64.dll", 0).unwrap();
+        assert_eq!(on.source, IcdSource::KhronosRegistry);
+        assert!(on.enabled);
+        assert!(!khronos_entry(r"C:\x\off.dll", 1).unwrap().enabled);
+        // Control: an empty name is not a registration.
+        assert!(khronos_entry("", 0).is_none());
     }
 
     #[test]
     fn display_driver_values() {
-        let text = "HKEY_LOCAL_MACHINE\\...\\0000\r\n    OpenCLDriverName    REG_SZ    C:\\DriverStore\\amdocl64.dll\r\n\r\nHKEY_LOCAL_MACHINE\\...\\0001\r\n    OpenCLDriverName    REG_SZ    C:\\DriverStore\\nvopencl64.dll\r\n\r\nEnd of search: 2 match(es) found.\r\n";
-        let v = parse_display_reg(text);
-        assert_eq!(
-            v.iter().map(|e| e.library.as_str()).collect::<Vec<_>>(),
-            [
-                r"C:\DriverStore\amdocl64.dll",
-                r"C:\DriverStore\nvopencl64.dll"
-            ]
-        );
+        let e = display_entry(r"C:\DriverStore\amdocl64.dll").unwrap();
+        assert_eq!(e.source, IcdSource::DisplayDriverKey);
+        assert_eq!(e.library, r"C:\DriverStore\amdocl64.dll");
+        assert!(display_entry("").is_none());
     }
 
     #[test]
@@ -230,9 +212,22 @@ mod tests {
         assert!(!check_load(&e).unwrap_err().is_empty());
     }
 
+    /// Whatever this machine registers, listing it must not panic, and every
+    /// entry names a library from a source this platform reads.
     #[test]
-    fn enumerating_this_machine_never_fails() {
-        // Whatever this machine registers, listing it must not panic.
-        let _ = registered_icds();
+    fn enumerating_this_machine_returns_well_formed_entries() {
+        for e in registered_icds() {
+            assert!(!e.library.is_empty(), "{e:?}");
+            #[cfg(windows)]
+            assert!(
+                matches!(
+                    e.source,
+                    IcdSource::KhronosRegistry | IcdSource::DisplayDriverKey
+                ),
+                "{e:?}"
+            );
+            #[cfg(not(windows))]
+            assert!(matches!(e.source, IcdSource::VendorFile(_)), "{e:?}");
+        }
     }
 }

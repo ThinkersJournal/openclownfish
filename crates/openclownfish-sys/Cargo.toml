@@ -13,3 +13,6 @@ categories = ["api-bindings", "external-ffi-bindings"]
 opencl-sys.workspace = true
 libloading.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"

@@ -2,7 +2,7 @@
 
 ## 0.0.21
 
-- Loader: `icd` module lists the drivers the system registers (Windows: Khronos registry key and display-adapter `OpenCLDriverName`; Unix: `.icd` files) and whether each loads; the probe prints them before the platform list (C2).
+- Loader: `icd` module lists the drivers the system registers (Windows: Khronos registry key and display-adapter `OpenCLDriverName`, read through the `winreg` crate, no program is run; Unix: `.icd` files) and whether each loads; the probe prints them before the platform list (C2).
 - Deps: unpopped and unpopped-vocab 0.38.0.
 
 ## 0.0.20
