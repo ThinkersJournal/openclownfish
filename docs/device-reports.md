@@ -25,6 +25,10 @@ Notes: the NVIDIA stack reports OpenCL C 1.2 on an OpenCL 3.0 platform (3.0 allo
 kernel needing 2.0 features cannot be assumed there. `cl_khr_fp16` is absent on the NVIDIA device,
 which gates any half-precision emission.
 
+## Finding: Intel CPU runtime, masked local-memory scan step (laptop, Windows, 2026-10-31)
+
+A Hillis-Steele step written as `if (lid >= off) left = buf[lid - off];` barrier `if (lid >= off) buf[lid] = comb(left, buf[lid]);` barrier gave wrong f32 Prod results from the Intel CPU runtime at work-group size 32 (row of 19, wrong from element 16, the `off = 16` step); the same kernel was right on the NVIDIA and AMD devices, and the Intel CPU was right at size 8. Written branch-free (`left = buf[lid >= off ? lid - off : lid]`, barrier, `buf[lid] = lid >= off ? comb(left, mine) : mine`, barrier) it agrees everywhere. I read the masked form as valid OpenCL C, but I did not isolate the cause (driver fault or an error of mine): treat it as unconfirmed. The emitter uses the branch-free form.
+
 ## Desktop rig (RTX 4060, Radeon VII, Arc A770, Tesla P40)
 
 - Windows: UNVERIFIED (not booted for this project yet).
