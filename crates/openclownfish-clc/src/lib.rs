@@ -24,6 +24,7 @@ mod parse;
 pub use parse::{OPENCL_C, parse_opencl_c};
 
 use unpopped::backend::{Backend, DtypeSupport, GeneratedKernel, LowerError};
+use unpopped::cfamily::{strided_offset_expr, unravel_decomp};
 use unpopped::ir::{Access, BinaryOp, ReadIndex, ReduceOp, ScalarExpr, UnaryOp, View, WriteIndex};
 use unpopped::plan::{KernelPlan, Schedule};
 use unpopped_vocab::{ElementKind, TargetId};
@@ -355,17 +356,10 @@ fn strided_facts(plan: &KernelPlan<'_>) -> Result<StridedCx, LowerError> {
 }
 
 /// The element offset of operand `k` (`s{k}_{d}` strides; broadcast axes have
-/// stride 0 and drop out) or of the output (`so_{d}`).
+/// stride 0 and drop out) or of the output (`so_{d}`), spelled by Unpopped's
+/// shared C-family helper.
 fn offset_expr(plan: &KernelPlan<'_>, operand: usize, stride: &str, rank: usize) -> String {
-    let terms: Vec<String> = (0..rank)
-        .filter(|d| !plan.key.operands[operand].bcast.is_set(*d as u8))
-        .map(|d| format!("c{d}*{stride}_{d}"))
-        .collect();
-    if terms.is_empty() {
-        "0".to_owned()
-    } else {
-        terms.join(" + ")
-    }
+    strided_offset_expr(plan.key.operands[operand].bcast, "c", stride, rank, None)
 }
 
 /// The rest of a strided kernel after `out`: the runtime shape, every input's
@@ -431,43 +425,32 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
 fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str) {
     let n_so = if rc.keepdim { rank } else { rc.kept.len() };
     for d in 0..rank {
-        s.push_str(&format!(
-            "    long shape{d},
-"
-        ));
+        s.push_str(&format!("    long shape{d},\n"));
     }
     for d in 0..rank {
-        s.push_str(&format!(
-            "    long s0_{d},
-"
-        ));
+        s.push_str(&format!("    long s0_{d},\n"));
     }
     for d in 0..n_so {
-        s.push_str(&format!(
-            "    long so_{d},
-"
-        ));
+        s.push_str(&format!("    long so_{d},\n"));
     }
     s.push_str(
         "    long n_out)
-{
-",
+{\n",
     );
     s.push_str(
         "    long o = (long)get_global_id(0);
-    if (o >= n_out) { return; }
-",
+    if (o >= n_out) { return; }\n",
     );
-    s.push_str(
-        "    long lin = o;
-",
-    );
-    for &a in rc.kept.iter().rev() {
-        s.push_str(&format!(
-            "    long ck{a} = lin % shape{a}; lin /= shape{a};
-"
-        ));
-    }
+    s.push_str("    long lin = o;\n");
+    s.push_str(&unravel_decomp(
+        rc.kept.iter().rev().copied(),
+        "    ",
+        "lin",
+        "long",
+        |a| format!("ck{a}"),
+        |a| format!("shape{a}"),
+        false,
+    ));
     let sum = |terms: Vec<String>| {
         if terms.is_empty() {
             "0".to_owned()
@@ -490,8 +473,7 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
         .collect());
     s.push_str(&format!(
         "    long base = {base};
-    long oo = {oo};
-"
+    long oo = {oo};\n"
     ));
     let ty = t.c;
     let u = t.uns;
@@ -532,20 +514,13 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
             )
         }
     };
-    s.push_str(&format!(
-        "    {ty} acc = {init};
-"
-    ));
+    s.push_str(&format!("    {ty} acc = {init};\n"));
     if matches!(rc.op, ReduceOp::Max | ReduceOp::Min) {
-        s.push_str(
-            "    int has = 0;
-",
-        );
+        s.push_str("    int has = 0;\n");
     }
     for &r in &rc.reduced {
         s.push_str(&format!(
-            "    for (long cr{r} = 0; cr{r} < shape{r}; ++cr{r}) {{
-"
+            "    for (long cr{r} = 0; cr{r} < shape{r}; ++cr{r}) {{\n"
         ));
     }
     let idx = sum(std::iter::once("base".to_owned())
@@ -553,14 +528,10 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
         .collect());
     s.push_str(&format!(
         "    long i = {idx};
-    {step}
-"
+    {step}\n"
     ));
     for _ in &rc.reduced {
-        s.push_str(
-            "    }
-",
-        );
+        s.push_str("    }\n");
     }
     let fin = if matches!(rc.op, ReduceOp::Mean) {
         let div = rc
@@ -575,8 +546,7 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
     };
     s.push_str(&format!(
         "    out[oo] = {fin};
-}}
-"
+}}\n"
     ));
 }
 
@@ -653,22 +623,14 @@ fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
     s.push_str(
         "    long n_out,
     long k)
-{
-",
+{\n",
     );
     s.push_str(
         "    long row = (long)get_global_id(0);
-    if (row >= n_out) { return; }
-",
+    if (row >= n_out) { return; }\n",
     );
-    s.push_str(
-        "    long base = row * k;
-",
-    );
-    s.push_str(&format!(
-        "    {ty} acc = {ident};
-"
-    ));
+    s.push_str("    long base = row * k;\n");
+    s.push_str(&format!("    {ty} acc = {ident};\n"));
     let fold = match sc.op {
         ReduceOp::Sum | ReduceOp::Prod => {
             let c = if matches!(sc.op, ReduceOp::Sum) {
@@ -684,10 +646,7 @@ fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
         }
         _ => {
             let c = if is_max { ">" } else { "<" };
-            s.push_str(
-                "    int have = 0;
-",
-            );
+            s.push_str("    int have = 0;\n");
             format!("if (!have || v != v || v {c} acc) {{ acc = v; have = 1; }}")
         }
     };
@@ -696,36 +655,24 @@ fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
     } else {
         "acc".to_owned()
     };
-    s.push_str(
-        "    for (long jj = 0; jj < k; ++jj) {
-",
-    );
+    s.push_str("    for (long jj = 0; jj < k; ++jj) {\n");
     let j = if sc.reverse { "k - 1 - jj" } else { "jj" };
-    s.push_str(&format!(
-        "        long i = base + ({j});
-"
-    ));
-    s.push_str(&format!(
-        "        {ty} v = {pre};
-"
-    ));
+    s.push_str(&format!("        long i = base + ({j});\n"));
+    s.push_str(&format!("        {ty} v = {pre};\n"));
     if sc.exclusive {
         s.push_str(&format!(
             "        out[i] = {first};
-        {fold}
-"
+        {fold}\n"
         ));
     } else {
         s.push_str(&format!(
             "        {fold}
-        out[i] = acc;
-"
+        out[i] = acc;\n"
         ));
     }
     s.push_str(
         "    }
-}
-",
+}\n",
     );
 }
 
@@ -756,11 +703,15 @@ fn emit_strided_body(
         }
     }
     s.push_str("    long lin = i;\n");
-    for d in (0..rank).rev() {
-        s.push_str(&format!(
-            "    long c{d} = lin % shape{d}; lin /= shape{d};\n"
-        ));
-    }
+    s.push_str(&unravel_decomp(
+        (0..rank).rev(),
+        "    ",
+        "lin",
+        "long",
+        |d| format!("c{d}"),
+        |d| format!("shape{d}"),
+        false,
+    ));
     for (k, hoist) in st.fully_bcast.iter().enumerate() {
         if !*hoist {
             let off = offset_expr(plan, k, &format!("s{k}"), rank);

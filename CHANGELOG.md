@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.22
+
+- Emitter: strided offsets and the coordinate unravel come from unpopped::cfamily (strided_offset_expr, unravel_decomp) instead of local copies; emitted kernels are unchanged and every device differential still passes.
+- Deps: unpopped and unpopped-vocab 0.38.1.
+
 ## 0.0.21
 
 - Loader: `icd` module lists the drivers the system registers (Windows: Khronos registry key and display-adapter `OpenCLDriverName`, read through the `winreg` crate, no program is run; Unix: `.icd` files) and whether each loads; the probe prints them before the platform list (C2).
