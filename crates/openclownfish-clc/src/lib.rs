@@ -423,12 +423,10 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
     })
 }
 
-/// The rest of a reduction kernel after `out`: `shape{d}` per input axis,
-/// `s0_{d}` input strides, `so_{j}` output strides (per input axis with
-/// `keepdim`, else per kept axis), then `n_out`, in Baracuda's argument order.
-/// One work item per output element folds the reduced axes serially, in
-/// row-major order over them, in the element type.
-fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str) {
+/// The kernel parameters after `out`, through the opening brace: `shape{d}` per
+/// input axis, `s0_{d}` input strides, `so_{j}` output strides (per input axis
+/// with `keepdim`, else per kept axis), then `n_out`, in Baracuda's order.
+fn emit_reduction_params(s: &mut String, rank: usize, rc: &ReduceCx) {
     let n_so = if rc.keepdim { rank } else { rc.kept.len() };
     for d in 0..rank {
         s.push_str(&format!("    long shape{d},\n"));
@@ -443,10 +441,20 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
         "    long n_out)
 {\n",
     );
-    s.push_str(
-        "    long o = (long)get_global_id(0);
-    if (o >= n_out) { return; }\n",
-    );
+}
+
+/// An index expression: the terms added, or `0` when there are none.
+fn sum(terms: Vec<String>) -> String {
+    if terms.is_empty() {
+        "0".to_owned()
+    } else {
+        terms.join(" + ")
+    }
+}
+
+/// Declares `base` (the input offset of output element `o`'s first folded
+/// element) and `oo` (its output offset); `o` must be in scope.
+fn emit_reduction_addressing(s: &mut String, rc: &ReduceCx) {
     s.push_str("    long lin = o;\n");
     s.push_str(&unravel_decomp(
         rc.kept.iter().rev().copied(),
@@ -457,13 +465,6 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
         |a| format!("shape{a}"),
         false,
     ));
-    let sum = |terms: Vec<String>| {
-        if terms.is_empty() {
-            "0".to_owned()
-        } else {
-            terms.join(" + ")
-        }
-    };
     let base = sum(rc.kept.iter().map(|a| format!("ck{a}*s0_{a}")).collect());
     let oo = sum(rc
         .kept
@@ -481,6 +482,18 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
         "    long base = {base};
     long oo = {oo};\n"
     ));
+}
+
+/// The rest of a reduction kernel after `out`. One work item per output element
+/// folds the reduced axes serially, in row-major order over them, in the element
+/// type.
+fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str) {
+    emit_reduction_params(s, rank, rc);
+    s.push_str(
+        "    long o = (long)get_global_id(0);
+    if (o >= n_out) { return; }\n",
+    );
+    emit_reduction_addressing(s, rc);
     let ty = t.c;
     let u = t.uns;
     let (init, step) = match rc.op {
@@ -612,7 +625,7 @@ fn scan_facts<'p>(
 fn scan_ident(op: ReduceOp, t: Ty) -> String {
     let ty = t.c;
     match op {
-        ReduceOp::Sum => format!("({ty})0"),
+        ReduceOp::Sum | ReduceOp::Mean => format!("({ty})0"),
         ReduceOp::Prod => format!("({ty})1"),
         _ => match (t.tag, matches!(op, ReduceOp::Max)) {
             ("i32", true) => "(-2147483647 - 1)".to_owned(),
@@ -686,11 +699,12 @@ fn emit_blockscan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
 }
 
 /// Text that precedes the block-scan kernel: the block-size macro and combiner.
-fn blockscan_prelude(sc: &ScanCx, t: Ty) -> String {
+/// The block-size macro and the `ocf_comb` combiner for a monoid (`Mean` folds as `Sum`).
+fn block_prelude(op: ReduceOp, t: Ty) -> String {
     let (ty, u) = (t.c, t.uns);
-    let comb = match sc.op {
-        ReduceOp::Sum | ReduceOp::Prod => {
-            let c = if matches!(sc.op, ReduceOp::Sum) {
+    let comb = match op {
+        ReduceOp::Sum | ReduceOp::Mean | ReduceOp::Prod => {
+            let c = if matches!(op, ReduceOp::Sum | ReduceOp::Mean) {
                 "+"
             } else {
                 "*"
@@ -702,7 +716,7 @@ fn blockscan_prelude(sc: &ScanCx, t: Ty) -> String {
             }
         }
         _ => {
-            let c = if matches!(sc.op, ReduceOp::Max) {
+            let c = if matches!(op, ReduceOp::Max) {
                 ">"
             } else {
                 "<"
@@ -711,6 +725,78 @@ fn blockscan_prelude(sc: &ScanCx, t: Ty) -> String {
         }
     };
     format!("#ifndef OCF_BLOCK\n#define OCF_BLOCK 64\n#endif\n\n{comb}\n\n")
+}
+
+/// The block-reduce variant's kernel after `out`: one work-group per output
+/// element, `OCF_BLOCK` work items. Item `lid` folds a contiguous chunk of the
+/// row-major reduced extent serially; a neighbour-pair tree in `__local` memory
+/// then combines the chunks in order, so `ocf_comb(a, b)` always has `a` earlier.
+/// That keeps Max/Min (ties keep the earlier operand, the last NaN wins) the
+/// serial fold's bits, signed zeros and NaN payloads included.
+fn emit_blockreduce_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str) {
+    let ty = t.c;
+    let ident = scan_ident(rc.op, t);
+    emit_reduction_params(s, rank, rc);
+    s.push_str(&format!("    __local {ty} buf[OCF_BLOCK];\n"));
+    s.push_str(
+        "    long o = (long)get_group_id(0);
+    if (o >= n_out) { return; }
+    long lid = (long)get_local_id(0);\n",
+    );
+    emit_reduction_addressing(s, rc);
+    let total = rc
+        .reduced
+        .iter()
+        .map(|r| format!("shape{r}"))
+        .collect::<Vec<_>>()
+        .join(" * ");
+    s.push_str(&format!(
+        "    long total = {total};
+    long chunk = (total + OCF_BLOCK - 1) / OCF_BLOCK;
+    long lo = lid * chunk;
+    long hi = lo + chunk;
+    if (hi > total) {{ hi = total; }}
+    {ty} acc = {ident};
+    for (long rr = lo; rr < hi; ++rr) {{
+        long rl = rr;\n"
+    ));
+    s.push_str(&unravel_decomp(
+        rc.reduced.iter().rev().copied(),
+        "        ",
+        "rl",
+        "long",
+        |a| format!("cr{a}"),
+        |a| format!("shape{a}"),
+        false,
+    ));
+    let idx = std::iter::once("base".to_owned())
+        .chain(rc.reduced.iter().map(|r| format!("cr{r}*s0_{r}")))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    s.push_str(&format!(
+        "        long i = {idx};
+        acc = ocf_comb(acc, {body});
+    }}
+    buf[lid] = acc;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (long st = 1; st < OCF_BLOCK; st <<= 1) {{
+        if (lid % (2 * st) == 0 && lid + st < OCF_BLOCK) {{
+            buf[lid] = ocf_comb(buf[lid], buf[lid + st]);
+        }}
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }}\n"
+    ));
+    let fin = match rc.op {
+        ReduceOp::Mean => format!("buf[0] / ({ty})(total)"),
+        // An empty reduced extent leaves 0 for floats (the serial seed), not the
+        // infinity the tree starts from; integer seeds are the identity itself.
+        ReduceOp::Max | ReduceOp::Min if !t.int => format!("(total == 0 ? ({ty})0 : buf[0])"),
+        _ => "buf[0]".to_owned(),
+    };
+    s.push_str(&format!(
+        "    if (lid == 0) {{ out[oo] = {fin}; }}
+}}\n"
+    ));
 }
 
 /// The rest of a scan kernel after `out`: `n_out` rows of `k` elements, in
@@ -842,8 +928,10 @@ impl Backend for OpenClC {
     }
 
     fn lower_variants(&self, plan: &KernelPlan<'_>) -> Result<Vec<Variant>, LowerError> {
-        let Schedule::Scan { block: false, .. } = plan.schedule else {
-            return Ok(Vec::new());
+        let is_scan = match plan.schedule {
+            Schedule::Scan { block: false, .. } => true,
+            Schedule::Reduction { .. } => false,
+            _ => return Ok(Vec::new()),
         };
         // Any decline of the serial base is a decline here too (never worse).
         let Ok(base) = self.lower(plan) else {
@@ -856,20 +944,36 @@ impl Backend for OpenClC {
             ElementKind::F64 => F64,
             _ => return Ok(Vec::new()),
         };
-        let Ok((sc, pre)) = scan_facts(plan, false) else {
-            return Ok(Vec::new());
-        };
         let cx = Cx {
             n_inputs: plan.n_inputs,
             t,
             strided: None,
         };
-        let body = expr(pre, cx)?;
-        let name = format!("{}_blockscan", base.name);
+        let (variant, op, body, sc, rc);
+        if is_scan {
+            let Ok((s, pre)) = scan_facts(plan, false) else {
+                return Ok(Vec::new());
+            };
+            variant = "blockscan";
+            op = s.op;
+            body = expr(pre, cx)?;
+            sc = Some(s);
+            rc = None;
+        } else {
+            let Ok(r) = reduction_facts(plan, t) else {
+                return Ok(Vec::new());
+            };
+            variant = "blockreduce";
+            op = r.op;
+            body = expr(plan.body, cx)?;
+            sc = None;
+            rc = Some(r);
+        }
+        let name = format!("{}_{variant}", base.name);
         let mut s = String::new();
         s.push_str("// Generated by openclownfish-clc (opencl_c backend) - do not edit.\n");
         s.push_str(&format!(
-            "// op: {} | cell: {} | variant: blockscan\n",
+            "// op: {} | cell: {} | variant: {variant}\n",
             plan.op_name,
             plan.key.to_token()
         ));
@@ -887,29 +991,40 @@ impl Backend for OpenClC {
         if helpers {
             s.push('\n');
         }
-        s.push_str(&blockscan_prelude(&sc, t));
+        s.push_str(&block_prelude(op, t));
         s.push_str(&format!("__kernel void {name}(\n"));
         s.push_str(&format!("    __global const {}* in0,\n", t.c));
         s.push_str(&format!("    __global {}* out,\n", t.c));
-        emit_blockscan_body(&mut s, &sc, t, &body);
-        // Float Sum/Prod are reassociated by the tree; everything else picks
-        // an operand or wraps exactly, so it is the serial fold's bits.
-        let reassociates = !t.int && matches!(sc.op, ReduceOp::Sum | ReduceOp::Prod);
+        let usage = if let (Some(sc), None) = (&sc, &rc) {
+            emit_blockscan_body(&mut s, sc, t, &body);
+            "one work-group per row: global = n_out * B, local = B, B a power of two \
+             no larger than the device's work-group limit (default 64; build with \
+             -D OCF_BLOCK=B to change it). Arguments as the serial scan: in0, out, \
+             n_out, k. A row longer than B threads a carry through ceil(k/B) chunks. \
+             Local memory: B elements of the compute type."
+        } else {
+            let rc = rc.as_ref().expect("reduction facts");
+            emit_blockreduce_body(&mut s, usize::from(plan.key.rank), rc, t, &body);
+            "one work-group per output element: global = n_out * B, local = B, B a power \
+             of two no larger than the device's work-group limit (default 64; build with \
+             -D OCF_BLOCK=B to change it). Arguments as the serial reduction: in0, out, \
+             shape{d}, s0_{d}, so_{j}, n_out. Each work item folds a contiguous chunk of \
+             the row-major reduced extent, then a neighbour-pair tree combines the \
+             chunks in order. Local memory: B elements of the compute type."
+        };
+        // Float Sum/Mean/Prod are reassociated by the tree; everything else
+        // picks an operand or wraps exactly, so it is the serial fold's bits.
+        let reassociates = !t.int && matches!(op, ReduceOp::Sum | ReduceOp::Mean | ReduceOp::Prod);
         let fidelity = if reassociates {
             VariantFidelity::DeterministicallyDivergent
         } else {
             VariantFidelity::BitIdentical
         };
         Ok(vec![Variant::new(
-            "blockscan",
+            variant,
             vec![GeneratedKernel::new(name, s)],
             fidelity,
-            "one work-group per row: global = n_out * B, local = B, B a power of two \
-             no larger than the device's work-group limit (default 64; build with \
-             -D OCF_BLOCK=B to change it). Arguments as the serial scan: in0, out, \
-             n_out, k. A row longer than B threads a carry through ceil(k/B) chunks. \
-             Local memory: B elements of the compute type."
-                .to_owned(),
+            usage.to_owned(),
         )])
     }
 
