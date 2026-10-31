@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.11
+
+- Device limits and extensions (compute units, work-group size, memory, fp64/fp16); probe prints host OS and limits; docs/device-reports.md (H1).
+
 ## 0.0.10
 
 - Emitter: Max, Min, FmaxIeee, FminIeee, Pow; parser lifts OpenCL math names via Unpopped 0.35.3 Frontend tables (X1/X2).
