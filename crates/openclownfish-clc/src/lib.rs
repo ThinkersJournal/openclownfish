@@ -146,8 +146,11 @@ fn input_leaf(i: u8, cx: Cx<'_>) -> String {
 ///
 /// Signed overflow is undefined in C, so `+ - *` and `<<` are computed in the
 /// unsigned type of the same width and converted back, which wraps on every
-/// compiler. Shift amounts outside `0..bits` are the caller's to avoid, as in
-/// the IR contract.
+/// compiler. A shift count is taken unsigned and modulo the bit width: OpenCL C
+/// masks it (6.5.10), which is the kernel-layer rule of unpopped 0.38.3
+/// (`docs/int-div-shift-semantics.md`), so out-of-range and negative counts need
+/// no guard. Integer division stays refused until the plan gate admits it (E16);
+/// OpenCL C leaves `b == 0` and `MIN / -1` unspecified, so it will need a guard.
 fn int_expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
     let (t, n_inputs) = (cx.t, cx.n_inputs);
     let wrap = |a: &ScalarExpr, op: &str, b: &ScalarExpr| -> Result<String, LowerError> {
