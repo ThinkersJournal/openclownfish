@@ -9,7 +9,8 @@
 //! comparisons (1.0 or 0.0) and `Select`. Everything else is a typed refusal,
 //! never an approximation. Reductions (`Schedule::Reduction`) are served as a
 //! serial per-output fold over any axis set, one input, identity post-expression,
-//! and scans (`Schedule::Scan`) as a serial per-row fold of the innermost axis.
+//! and scans (`Schedule::Scan`) as a serial per-row fold of the innermost axis;
+//! `lower_variants` also offers a work-group-per-row `blockscan` variant of each scan.
 //!
 //! `i32` and `i64` plans are served for the subset the IR allows on integers:
 //! wrapping `+ - *` and the bitwise and shift operators.
@@ -23,7 +24,9 @@ mod parse;
 #[cfg(feature = "parse")]
 pub use parse::{OPENCL_C, parse_opencl_c};
 
-use unpopped::backend::{Backend, DtypeSupport, GeneratedKernel, LowerError};
+use unpopped::backend::{
+    Backend, DtypeSupport, GeneratedKernel, LowerError, Variant, VariantFidelity,
+};
 use unpopped::cfamily::{strided_offset_expr, unravel_decomp};
 use unpopped::ir::{Access, BinaryOp, ReadIndex, ReduceOp, ScalarExpr, UnaryOp, View, WriteIndex};
 use unpopped::plan::{KernelPlan, Schedule};
@@ -602,16 +605,13 @@ fn scan_facts<'p>(
     ))
 }
 
-/// The rest of a scan kernel after `out`: `n_out` rows of `k` elements, in
-/// Baracuda's argument order. One work item owns a row and folds it serially in
-/// scan order (descending when `reverse`), in the element type.
-fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
-    let (ty, u) = (t.c, t.uns);
-    let is_max = matches!(sc.op, ReduceOp::Max);
-    let ident = match sc.op {
+/// The scan monoid's identity, spelled for the element type.
+fn scan_ident(op: ReduceOp, t: Ty) -> String {
+    let ty = t.c;
+    match op {
         ReduceOp::Sum => format!("({ty})0"),
         ReduceOp::Prod => format!("({ty})1"),
-        _ => match (t.tag, is_max) {
+        _ => match (t.tag, matches!(op, ReduceOp::Max)) {
             ("i32", true) => "(-2147483647 - 1)".to_owned(),
             ("i32", false) => "2147483647".to_owned(),
             ("i64", true) => "(-9223372036854775807L - 1L)".to_owned(),
@@ -619,7 +619,104 @@ fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
             (_, true) => format!("(({ty})-INFINITY)"),
             (_, false) => format!("(({ty})INFINITY)"),
         },
+    }
+}
+
+/// The block-scan variant's kernel: one work-group per row, `OCF_BLOCK` work
+/// items (a power of two, default 64, set with `-D OCF_BLOCK=n` at build time).
+/// A Hillis-Steele inclusive scan in `__local` memory per chunk of `OCF_BLOCK`
+/// elements; a row longer than that threads a carry through its chunks.
+///
+/// `comb(a, b)` has `a` earlier in scan order. Max/Min take the later operand
+/// when it is NaN or strictly better and otherwise the earlier one, so ties
+/// keep the earlier element and the last NaN wins - the serial fold's result,
+/// and associative, so the tree agrees with it bit for bit. The combiner picks
+/// an operand rather than computing one, so signed zeros and NaN payloads move.
+fn emit_blockscan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
+    let ty = t.c;
+    let ident = scan_ident(sc.op, t);
+    s.push_str(
+        "    long n_out,
+    long k)
+{
+    __local ",
+    );
+    s.push_str(&format!("{ty} buf[OCF_BLOCK];\n"));
+    s.push_str(
+        "    long row = (long)get_group_id(0);
+    if (row >= n_out) { return; }
+    long lid = (long)get_local_id(0);
+    long base = row * k;\n",
+    );
+    s.push_str(&format!("    {ty} carry = {ident};\n"));
+    s.push_str("    for (long c0 = 0; c0 < k; c0 += OCF_BLOCK) {\n");
+    s.push_str("        long p = c0 + lid;\n");
+    s.push_str(&format!("        {ty} v = {ident};\n"));
+    let j = if sc.reverse { "k - 1 - p" } else { "p" };
+    s.push_str(&format!(
+        "        long i = base + ({j});
+        if (p < k) {{ v = {pre}; }}
+        buf[lid] = v;
+        barrier(CLK_LOCAL_MEM_FENCE);
+        for (long off = 1; off < OCF_BLOCK; off <<= 1) {{
+            {ty} left = buf[lid >= off ? lid - off : lid];
+            barrier(CLK_LOCAL_MEM_FENCE);
+            {ty} mine = buf[lid];
+            {ty} next = lid >= off ? ocf_comb(left, mine) : mine;
+            buf[lid] = next;
+            barrier(CLK_LOCAL_MEM_FENCE);
+        }}\n"
+    ));
+    let val = if sc.exclusive {
+        "(lid > 0 ? ocf_comb(carry, buf[lid - 1]) : carry)"
+    } else {
+        "ocf_comb(carry, buf[lid])"
     };
+    s.push_str(&format!(
+        "        if (p < k) {{ out[i] = {val}; }}
+        {ty} total = buf[OCF_BLOCK - 1];
+        carry = ocf_comb(carry, total);
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }}
+}}\n"
+    ));
+}
+
+/// Text that precedes the block-scan kernel: the block-size macro and combiner.
+fn blockscan_prelude(sc: &ScanCx, t: Ty) -> String {
+    let (ty, u) = (t.c, t.uns);
+    let comb = match sc.op {
+        ReduceOp::Sum | ReduceOp::Prod => {
+            let c = if matches!(sc.op, ReduceOp::Sum) {
+                "+"
+            } else {
+                "*"
+            };
+            if t.int {
+                format!("{ty} ocf_comb({ty} a, {ty} b) {{ return ({ty})(({u})a {c} ({u})b); }}")
+            } else {
+                format!("{ty} ocf_comb({ty} a, {ty} b) {{ return a {c} b; }}")
+            }
+        }
+        _ => {
+            let c = if matches!(sc.op, ReduceOp::Max) {
+                ">"
+            } else {
+                "<"
+            };
+            format!("{ty} ocf_comb({ty} a, {ty} b) {{ return (b != b || b {c} a) ? b : a; }}")
+        }
+    };
+    format!("#ifndef OCF_BLOCK\n#define OCF_BLOCK 64\n#endif\n\n{comb}\n\n")
+}
+
+/// The rest of a scan kernel after `out`: `n_out` rows of `k` elements, in
+/// Baracuda's argument order. One work item owns a row and folds it serially in
+/// scan order (descending when `reverse`), in the element type.
+fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
+    let (ty, u) = (t.c, t.uns);
+    let is_max = matches!(sc.op, ReduceOp::Max);
+    let ident = scan_ident(sc.op, t);
     s.push_str(
         "    long n_out,
     long k)
@@ -739,6 +836,78 @@ impl Backend for OpenClC {
             ElementKind::I32 | ElementKind::I64 => DtypeSupport::Supported,
             _ => DtypeSupport::Unsupported,
         }
+    }
+
+    fn lower_variants(&self, plan: &KernelPlan<'_>) -> Result<Vec<Variant>, LowerError> {
+        let Schedule::Scan { block: false, .. } = plan.schedule else {
+            return Ok(Vec::new());
+        };
+        // Any decline of the serial base is a decline here too (never worse).
+        let Ok(base) = self.lower(plan) else {
+            return Ok(Vec::new());
+        };
+        let t = match plan.dtype {
+            ElementKind::F32 => F32,
+            ElementKind::I32 => I32,
+            ElementKind::I64 => I64,
+            ElementKind::F64 => F64,
+            _ => return Ok(Vec::new()),
+        };
+        let Ok((sc, pre)) = scan_facts(plan, false) else {
+            return Ok(Vec::new());
+        };
+        let cx = Cx {
+            n_inputs: plan.n_inputs,
+            t,
+            strided: None,
+        };
+        let body = expr(pre, cx)?;
+        let name = format!("{}_blockscan", base.name);
+        let mut s = String::new();
+        s.push_str("// Generated by openclownfish-clc (opencl_c backend) - do not edit.\n");
+        s.push_str(&format!(
+            "// op: {} | cell: {} | variant: blockscan\n",
+            plan.op_name,
+            plan.key.to_token()
+        ));
+        if t.c == "double" {
+            s.push_str("#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n");
+        }
+        s.push_str("#pragma OPENCL FP_CONTRACT OFF\n\n");
+        let mut helpers = false;
+        for (call, text) in HELPERS {
+            if body.contains(call) {
+                s.push_str(&text.replace("float", t.c));
+                helpers = true;
+            }
+        }
+        if helpers {
+            s.push('\n');
+        }
+        s.push_str(&blockscan_prelude(&sc, t));
+        s.push_str(&format!("__kernel void {name}(\n"));
+        s.push_str(&format!("    __global const {}* in0,\n", t.c));
+        s.push_str(&format!("    __global {}* out,\n", t.c));
+        emit_blockscan_body(&mut s, &sc, t, &body);
+        // Float Sum/Prod are reassociated by the tree; everything else picks
+        // an operand or wraps exactly, so it is the serial fold's bits.
+        let reassociates = !t.int && matches!(sc.op, ReduceOp::Sum | ReduceOp::Prod);
+        let fidelity = if reassociates {
+            VariantFidelity::DeterministicallyDivergent
+        } else {
+            VariantFidelity::BitIdentical
+        };
+        Ok(vec![Variant::new(
+            "blockscan",
+            vec![GeneratedKernel::new(name, s)],
+            fidelity,
+            "one work-group per row: global = n_out * B, local = B, B a power of two \
+             no larger than the device's work-group limit (default 64; build with \
+             -D OCF_BLOCK=B to change it). Arguments as the serial scan: in0, out, \
+             n_out, k. A row longer than B threads a carry through ceil(k/B) chunks. \
+             Local memory: B elements of the compute type."
+                .to_owned(),
+        )])
     }
 
     fn lower(&self, plan: &KernelPlan<'_>) -> Result<GeneratedKernel, LowerError> {
