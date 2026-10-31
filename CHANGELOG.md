@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.19
+
+- Emitter: serial per-row scans (Sum, Prod, Max, Min; f32, f64, i32, i64; forward or reverse; inclusive or exclusive; per-element pre-map) in Baracuda's argument convention; 132 cases bit-exact on every device (X2).
+
 ## 0.0.18
 
 - Deps: unpopped and unpopped-vocab 0.37.0.

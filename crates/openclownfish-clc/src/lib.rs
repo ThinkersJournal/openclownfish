@@ -8,7 +8,8 @@
 //! (NaN-propagating) and `FmaxIeee`/`FminIeee` (NaN-suppressing), `Pow`, the six
 //! comparisons (1.0 or 0.0) and `Select`. Everything else is a typed refusal,
 //! never an approximation. Reductions (`Schedule::Reduction`) are served as a
-//! serial per-output fold over any axis set, one input, identity post-expression.
+//! serial per-output fold over any axis set, one input, identity post-expression,
+//! and scans (`Schedule::Scan`) as a serial per-row fold of the innermost axis.
 //!
 //! `i32` and `i64` plans are served for the subset the IR allows on integers:
 //! wrapping `+ - *` and the bitwise and shift operators.
@@ -579,6 +580,155 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
     ));
 }
 
+/// What a scan kernel computes along the innermost axis.
+struct ScanCx {
+    op: ReduceOp,
+    reverse: bool,
+    exclusive: bool,
+}
+
+/// The scan plan's facts, and its per-element pre-map, or why this emitter
+/// cannot serve it. Scope (v1): the serial per-row fold (not the block-scan
+/// variant), the innermost axis, one input, identity epilogue, no `Mean`.
+fn scan_facts<'p>(
+    plan: &KernelPlan<'p>,
+    block: bool,
+) -> Result<(ScanCx, &'p ScalarExpr), LowerError> {
+    let Schedule::Scan {
+        op,
+        axis,
+        reverse,
+        exclusive,
+        ..
+    } = plan.schedule
+    else {
+        return Err(refuse("scan schedule expected"));
+    };
+    let Access::Scan { pre, post, .. } = plan.access else {
+        return Err(refuse("scan schedule without a scan access"));
+    };
+    if block {
+        return Err(refuse("the block-scan variant"));
+    }
+    if matches!(op, ReduceOp::Mean) {
+        return Err(refuse("Mean is not a scan monoid"));
+    }
+    if plan.n_inputs != 1 {
+        return Err(refuse("scans take a single input"));
+    }
+    if usize::from(axis) + 1 != usize::from(plan.key.rank) {
+        return Err(refuse("scans over a non-innermost axis"));
+    }
+    if !matches!(post, ScalarExpr::Reduced(0)) {
+        return Err(refuse("fused scan epilogues"));
+    }
+    Ok((
+        ScanCx {
+            op,
+            reverse,
+            exclusive,
+        },
+        pre,
+    ))
+}
+
+/// The rest of a scan kernel after `out`: `n_out` rows of `k` elements, in
+/// Baracuda's argument order. One work item owns a row and folds it serially in
+/// scan order (descending when `reverse`), in the element type.
+fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
+    let (ty, u) = (t.c, t.uns);
+    let is_max = matches!(sc.op, ReduceOp::Max);
+    let ident = match sc.op {
+        ReduceOp::Sum => format!("({ty})0"),
+        ReduceOp::Prod => format!("({ty})1"),
+        _ => match (t.tag, is_max) {
+            ("i32", true) => "(-2147483647 - 1)".to_owned(),
+            ("i32", false) => "2147483647".to_owned(),
+            ("i64", true) => "(-9223372036854775807L - 1L)".to_owned(),
+            ("i64", false) => "9223372036854775807L".to_owned(),
+            (_, true) => format!("(({ty})-INFINITY)"),
+            (_, false) => format!("(({ty})INFINITY)"),
+        },
+    };
+    s.push_str(
+        "    long n_out,
+    long k)
+{
+",
+    );
+    s.push_str(
+        "    long row = (long)get_global_id(0);
+    if (row >= n_out) { return; }
+",
+    );
+    s.push_str(
+        "    long base = row * k;
+",
+    );
+    s.push_str(&format!(
+        "    {ty} acc = {ident};
+"
+    ));
+    let fold = match sc.op {
+        ReduceOp::Sum | ReduceOp::Prod => {
+            let c = if matches!(sc.op, ReduceOp::Sum) {
+                "+"
+            } else {
+                "*"
+            };
+            if t.int {
+                format!("acc = ({ty})(({u})acc {c} ({u})v);")
+            } else {
+                format!("acc = acc {c} v;")
+            }
+        }
+        _ => {
+            let c = if is_max { ">" } else { "<" };
+            s.push_str(
+                "    int have = 0;
+",
+            );
+            format!("if (!have || v != v || v {c} acc) {{ acc = v; have = 1; }}")
+        }
+    };
+    let first = if matches!(sc.op, ReduceOp::Max | ReduceOp::Min) {
+        format!("have ? acc : {ident}")
+    } else {
+        "acc".to_owned()
+    };
+    s.push_str(
+        "    for (long jj = 0; jj < k; ++jj) {
+",
+    );
+    let j = if sc.reverse { "k - 1 - jj" } else { "jj" };
+    s.push_str(&format!(
+        "        long i = base + ({j});
+"
+    ));
+    s.push_str(&format!(
+        "        {ty} v = {pre};
+"
+    ));
+    if sc.exclusive {
+        s.push_str(&format!(
+            "        out[i] = {first};
+        {fold}
+"
+        ));
+    } else {
+        s.push_str(&format!(
+            "        {fold}
+        out[i] = acc;
+"
+        ));
+    }
+    s.push_str(
+        "    }
+}
+",
+    );
+}
+
 fn emit_strided_body(
     s: &mut String,
     plan: &KernelPlan<'_>,
@@ -679,8 +829,13 @@ impl Backend for OpenClC {
         // is element-counted (`effective_count_width` stays 1), which is correct
         // for any contiguous elementwise plan.
         let mut reduction = None;
+        let mut scan = None;
         let strided = match plan.schedule {
             Schedule::Scalar | Schedule::Vectorized { .. } => None,
+            Schedule::Scan { block, .. } => {
+                scan = Some(scan_facts(plan, block)?);
+                None
+            }
             Schedule::Reduction { .. } => {
                 reduction = Some(reduction_facts(plan, t)?);
                 None
@@ -699,8 +854,16 @@ impl Backend for OpenClC {
             t,
             strided: strided.as_ref(),
         };
-        let body = expr(plan.body, cx)?;
-        let kind = if let Some(rc) = &reduction {
+        // A scan folds its per-element pre-map; the epilogue is the identity.
+        let body = expr(scan.as_ref().map_or(plan.body, |(_, pre)| pre), cx)?;
+        let kind = if let Some((sc, _)) = &scan {
+            format!(
+                "_scan_{}{}{}",
+                format!("{:?}", sc.op).to_lowercase(),
+                if sc.reverse { "_rev" } else { "" },
+                if sc.exclusive { "_excl" } else { "" }
+            )
+        } else if let Some(rc) = &reduction {
             let ax: String = rc.reduced.iter().map(|r| r.to_string()).collect();
             format!(
                 "_reduce_{}_ax{ax}{}",
@@ -742,6 +905,10 @@ impl Backend for OpenClC {
         }
         s.push_str(&format!("    __global {}* out,\n", t.c));
         match &strided {
+            None if scan.is_some() => {
+                let (sc, _) = scan.as_ref().unwrap();
+                emit_scan_body(&mut s, sc, t, &body);
+            }
             None if reduction.is_some() => {
                 let rc = reduction.as_ref().unwrap();
                 emit_reduction_body(&mut s, usize::from(plan.key.rank), rc, t, &body);
