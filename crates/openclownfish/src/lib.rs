@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 use openclownfish_sys::OpenCl;
 use openclownfish_sys::types::{
+    CL_DEVICE_EXTENSIONS, CL_DEVICE_GLOBAL_MEM_SIZE, CL_DEVICE_LOCAL_MEM_SIZE,
+    CL_DEVICE_MAX_COMPUTE_UNITS, CL_DEVICE_MAX_MEM_ALLOC_SIZE, CL_DEVICE_MAX_WORK_GROUP_SIZE,
     CL_DEVICE_NAME, CL_DEVICE_NOT_FOUND, CL_DEVICE_OPENCL_C_VERSION, CL_DEVICE_TYPE,
     CL_DEVICE_TYPE_ALL, CL_DEVICE_VENDOR, CL_DEVICE_VERSION, CL_PLATFORM_NAME, CL_PLATFORM_VENDOR,
     CL_PLATFORM_VERSION, CL_SUCCESS, cl_device_id, cl_int, cl_platform_id, cl_uint,
@@ -50,6 +52,14 @@ pub enum Error {
         code: cl_int,
         /// Build log, verbatim.
         log: String,
+    },
+    /// A numeric property came back with a width other than 4 or 8 bytes.
+    #[error("{call} returned a {size}-byte number, expected 4 or 8")]
+    UnexpectedSize {
+        /// Name of the call.
+        call: &'static str,
+        /// Bytes the driver returned.
+        size: usize,
     },
     /// A string argument contains an interior NUL byte.
     #[error("{0} contains a NUL byte")]
@@ -289,11 +299,103 @@ impl Device {
             other => DeviceKind::Other(other),
         })
     }
+
+    /// A numeric device property, whose width (4 or 8 bytes) the driver sets.
+    fn number(&self, param: cl_uint) -> Result<u64, Error> {
+        let raw = self.raw(param)?;
+        Ok(match raw.len() {
+            4 => u64::from(u32::from_ne_bytes(raw[..4].try_into().expect("4 bytes"))),
+            8 => u64::from_ne_bytes(raw[..8].try_into().expect("8 bytes")),
+            size => {
+                return Err(Error::UnexpectedSize {
+                    call: "clGetDeviceInfo",
+                    size,
+                });
+            }
+        })
+    }
+
+    /// `CL_DEVICE_EXTENSIONS`, one name per entry.
+    pub fn extensions(&self) -> Result<Vec<String>, Error> {
+        Ok(self
+            .info(CL_DEVICE_EXTENSIONS)?
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// Whether the device lists extension `name` (for example `cl_khr_fp64`).
+    pub fn has_extension(&self, name: &str) -> Result<bool, Error> {
+        Ok(self.extensions()?.iter().any(|e| e == name))
+    }
+
+    /// `CL_DEVICE_MAX_COMPUTE_UNITS`.
+    pub fn compute_units(&self) -> Result<u32, Error> {
+        Ok(u32::try_from(self.number(CL_DEVICE_MAX_COMPUTE_UNITS)?).unwrap_or(u32::MAX))
+    }
+
+    /// `CL_DEVICE_MAX_WORK_GROUP_SIZE`, the most work-items per work-group.
+    pub fn max_work_group_size(&self) -> Result<u64, Error> {
+        self.number(CL_DEVICE_MAX_WORK_GROUP_SIZE)
+    }
+
+    /// `CL_DEVICE_GLOBAL_MEM_SIZE` in bytes.
+    pub fn global_mem_bytes(&self) -> Result<u64, Error> {
+        self.number(CL_DEVICE_GLOBAL_MEM_SIZE)
+    }
+
+    /// `CL_DEVICE_MAX_MEM_ALLOC_SIZE` in bytes: the largest single buffer.
+    pub fn max_alloc_bytes(&self) -> Result<u64, Error> {
+        self.number(CL_DEVICE_MAX_MEM_ALLOC_SIZE)
+    }
+
+    /// `CL_DEVICE_LOCAL_MEM_SIZE` in bytes.
+    pub fn local_mem_bytes(&self) -> Result<u64, Error> {
+        self.number(CL_DEVICE_LOCAL_MEM_SIZE)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every device that answers reports limits that make sense together. A
+    /// property the driver refuses is reported by the probe, not hidden here.
+    #[test]
+    fn device_limits_are_consistent() {
+        let Ok(rt) = Runtime::load() else { return };
+        let Ok(platforms) = rt.platforms() else {
+            return;
+        };
+        let mut checked = 0;
+        for p in platforms {
+            let Ok(devices) = p.devices() else { continue };
+            for d in devices {
+                let (Ok(units), Ok(wg), Ok(global), Ok(alloc), Ok(exts)) = (
+                    d.compute_units(),
+                    d.max_work_group_size(),
+                    d.global_mem_bytes(),
+                    d.max_alloc_bytes(),
+                    d.extensions(),
+                ) else {
+                    continue;
+                };
+                assert!(units > 0 && wg > 0, "{:?}", d.name());
+                assert!(
+                    alloc <= global,
+                    "{:?}: alloc {alloc} > global {global}",
+                    d.name()
+                );
+                assert!(exts.iter().all(|e| !e.contains(char::is_whitespace)));
+                assert_eq!(
+                    d.has_extension("cl_khr_fp64").unwrap(),
+                    exts.iter().any(|e| e == "cl_khr_fp64")
+                );
+                checked += 1;
+            }
+        }
+        eprintln!("device limits checked on {checked} device(s)");
+    }
 
     #[test]
     fn text_stops_at_nul() {
