@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.34
+
+- Emitter: f16 elementwise kernels, contiguous and strided (X2 PR3), the same way as bf16: stored as its 16-bit pattern in a `ushort`, computed in `float`, through an integer decode/encode in the kernel. It needs no `cl_khr_fp16`, so it runs on NVIDIA too, which has no such extension; native `half` arithmetic was not used because it would round after every operation where the oracle rounds once at the store. A store rounds to nearest even; an f16 NaN created by an operation is the canonical quiet NaN with its sign (the oracle's rule); `Neg`, `Abs`, `Max`, `Min` and `Select` move bits as for bf16. A constant must be exactly representable in f16.
+- Tests: `device_agrees_bf16.rs` became `device_agrees_half.rs` and covers both formats: 252 elementwise case runs and the strided cases agree with the oracle on all 3 laptop devices (NVIDIA included), and every one of the 65536 patterns of each format goes through decode, an exact scaling (x1, x0.5, x2) and encode, which exercises subnormal rounding and overflow. A planted tie-to-even bug in the f16 encoder fails it.
+- f16 reductions and scans are declined by name, as for bf16.
+
 ## 0.0.33
 
 - Emitter: bf16 elementwise kernels, contiguous and strided (X2 PR2). bf16 is stored as its 16-bit pattern in a `ushort` and computed in `float`: a load is a shift, a store rounds to nearest even and keeps a NaN quiet with its payload's top bits. As in Unpopped's oracle, `Neg`, `Abs`, `Max`, `Min` and `Select` on stored values move bits (a NaN payload, a signalling NaN and the sign of a zero survive); every other operation computes in float and rounds once at the store. `+ - * /`, the comparisons, `Select`, `Max`/`Min`, `Neg`/`Abs`, `sqr recip sqrt rsqrt exp log` are served; a constant must be exactly representable in bf16. 126 elementwise case runs plus the strided cases agree with the oracle on all 3 laptop devices: bit moves, comparisons and `+ - *` byte for byte (two NaNs agree where an operation creates one), `/ sqrt exp log` within one bf16 step.
