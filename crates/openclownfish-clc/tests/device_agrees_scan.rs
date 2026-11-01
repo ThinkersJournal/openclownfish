@@ -7,6 +7,8 @@
 //! data includes wrap-around. Every op runs forward and reverse, inclusive and
 //! exclusive, on rank 2 and rank 3.
 
+mod common;
+
 use openclownfish::{Context, Program, Runtime};
 use openclownfish_clc::OpenClC;
 use unpopped::backend::Backend;
@@ -27,6 +29,9 @@ fn dense(shape: &[i64]) -> Vec<i64> {
 
 fn input_buffer(dtype: ElementKind, shape: &[i64]) -> TypedBuffer {
     let n: usize = shape.iter().product::<i64>() as usize;
+    if let Some(b) = common::narrow_buffer(dtype, shape) {
+        return b;
+    }
     match dtype {
         ElementKind::F32 => {
             let cyc = [1.0f32, 2.0, 0.5, -1.0, 0.25, -2.0, 1.5];
@@ -69,7 +74,10 @@ fn cases() -> Vec<Case> {
         ElementKind::F64,
         ElementKind::I32,
         ElementKind::I64,
-    ] {
+    ]
+    .into_iter()
+    .chain(common::NARROW)
+    {
         for op in [ReduceOp::Sum, ReduceOp::Prod, ReduceOp::Max, ReduceOp::Min] {
             for shape in SHAPES {
                 for reverse in [false, true] {
@@ -163,11 +171,7 @@ fn scans_agree_with_the_oracle_on_every_device() {
                     ),
                 };
                 let mut k = prog.kernel(&kernel.name).unwrap();
-                let w = if matches!(c.dtype, ElementKind::I64 | ElementKind::F64) {
-                    8
-                } else {
-                    4
-                };
+                let w = common::width(c.dtype);
                 let len = *c.shape.last().unwrap();
                 let n_el: i64 = c.shape.iter().product();
                 let n_out = n_el / len;
