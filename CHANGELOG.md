@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.31
+
+- Deps: unpopped and unpopped-vocab 0.40.0 (Breaking upstream: `Stmt::AtomicRmw` in the kernel IR). The emitter lowers `KernelPlan` and never consumes the kernel-layer `Stmt` IR, so no arm is needed and no emitted kernel changes; a kernel-IR emitter (atomic add/max/min on integers) is not started. Every device differential passes unchanged on all 3 laptop devices.
+
 ## 0.0.30
 
 - Deps: unpopped and unpopped-vocab 0.39.1 (0.39 is Breaking upstream: windows with no in-bounds tap are declined, and the oracle takes integer shift counts modulo the width). The emitter serves only elementwise, reduction and scan accesses, so it has no windowed op that the tap rule could reach; the integer shift differential (negative and over-wide counts) and every other device differential pass unchanged on all 3 laptop devices.
