@@ -75,6 +75,10 @@ struct Ty {
     /// The unsigned type of the same width, through which integer `+ - *` and
     /// `<<` are computed so overflow wraps instead of being undefined.
     uns: &'static str,
+    /// The smallest and largest value of an integer type, spelled as C
+    /// constants (the Max and Min monoid identities); empty for floats.
+    lo: &'static str,
+    hi: &'static str,
 }
 
 const F32: Ty = Ty {
@@ -83,6 +87,8 @@ const F32: Ty = Ty {
     tag: "f32",
     int: false,
     uns: "",
+    lo: "",
+    hi: "",
 };
 const F64: Ty = Ty {
     c: "double",
@@ -90,6 +96,8 @@ const F64: Ty = Ty {
     tag: "f64",
     int: false,
     uns: "",
+    lo: "",
+    hi: "",
 };
 const I32: Ty = Ty {
     c: "int",
@@ -97,6 +105,8 @@ const I32: Ty = Ty {
     tag: "i32",
     int: true,
     uns: "uint",
+    lo: "(-2147483647 - 1)",
+    hi: "2147483647",
 };
 const I64: Ty = Ty {
     c: "long",
@@ -104,7 +114,62 @@ const I64: Ty = Ty {
     tag: "i64",
     int: true,
     uns: "ulong",
+    lo: "(-9223372036854775807L - 1L)",
+    hi: "9223372036854775807L",
 };
+// The narrow integers compute `+ - *` and `<<` in `uint` (C promotes them to
+// `int`, where a 16-bit product can overflow), and convert back, which wraps at
+// the element width. Shifts promote to `int` and take the count modulo 32, the
+// promoted width Unpopped's rule names for every type narrower than 32 bits.
+const I8: Ty = Ty {
+    c: "char",
+    suffix: "",
+    tag: "i8",
+    int: true,
+    uns: "uint",
+    lo: "((char)-128)",
+    hi: "((char)127)",
+};
+const U8: Ty = Ty {
+    c: "uchar",
+    suffix: "",
+    tag: "u8",
+    int: true,
+    uns: "uint",
+    lo: "((uchar)0)",
+    hi: "((uchar)255)",
+};
+const I16: Ty = Ty {
+    c: "short",
+    suffix: "",
+    tag: "i16",
+    int: true,
+    uns: "uint",
+    lo: "((short)-32768)",
+    hi: "((short)32767)",
+};
+const U16: Ty = Ty {
+    c: "ushort",
+    suffix: "",
+    tag: "u16",
+    int: true,
+    uns: "uint",
+    lo: "((ushort)0)",
+    hi: "((ushort)65535)",
+};
+
+/// The C spelling for a dtype this emitter serves without an extension.
+fn int_ty(dtype: ElementKind) -> Option<Ty> {
+    Some(match dtype {
+        ElementKind::I8 => I8,
+        ElementKind::U8 => U8,
+        ElementKind::I16 => I16,
+        ElementKind::U16 => U16,
+        ElementKind::I32 => I32,
+        ElementKind::I64 => I64,
+        _ => return None,
+    })
+}
 
 fn refuse(detail: impl Into<String>) -> LowerError {
     LowerError::UnsupportedOp {
@@ -421,6 +486,15 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
     if t.int && matches!(op, ReduceOp::Mean) {
         return Err(refuse("integer Mean"));
     }
+    // Unpopped's oracle scopes integer reductions to i32 and i64 (the referee
+    // panics on a narrower dtype), so a narrow one would have nothing to be
+    // checked against: decline it by name.
+    if t.int && !matches!(t.tag, "i32" | "i64") {
+        return Err(refuse(format!(
+            "{} reductions (Unpopped scopes integer reductions to i32 and i64)",
+            t.tag
+        )));
+    }
     let rank = usize::from(plan.key.rank);
     if rank == 0 {
         return Err(refuse("rank-0 reductions"));
@@ -560,11 +634,9 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
             let cmp = if max { ">" } else { "<" };
             // An empty reduced extent leaves the monoid identity (dtype extreme
             // for integers, 0 for floats), as Baracuda's emitter does.
-            let seed = match (t.tag, max) {
-                ("i32", true) => "(-2147483647 - 1)".to_owned(),
-                ("i32", false) => "2147483647".to_owned(),
-                ("i64", true) => "(-9223372036854775807L - 1L)".to_owned(),
-                ("i64", false) => "9223372036854775807L".to_owned(),
+            let seed = match (t.int, max) {
+                (true, true) => t.lo.to_owned(),
+                (true, false) => t.hi.to_owned(),
                 _ => format!("({ty})0"),
             };
             (
@@ -665,13 +737,11 @@ fn scan_ident(op: ReduceOp, t: Ty) -> String {
     match op {
         ReduceOp::Sum | ReduceOp::Mean => format!("({ty})0"),
         ReduceOp::Prod => format!("({ty})1"),
-        _ => match (t.tag, matches!(op, ReduceOp::Max)) {
-            ("i32", true) => "(-2147483647 - 1)".to_owned(),
-            ("i32", false) => "2147483647".to_owned(),
-            ("i64", true) => "(-9223372036854775807L - 1L)".to_owned(),
-            ("i64", false) => "9223372036854775807L".to_owned(),
-            (_, true) => format!("(({ty})-INFINITY)"),
-            (_, false) => format!("(({ty})INFINITY)"),
+        _ => match (t.int, matches!(op, ReduceOp::Max)) {
+            (true, true) => t.lo.to_owned(),
+            (true, false) => t.hi.to_owned(),
+            (false, true) => format!("(({ty})-INFINITY)"),
+            (false, false) => format!("(({ty})INFINITY)"),
         },
     }
 }
@@ -963,7 +1033,7 @@ impl Backend for OpenClC {
         match dtype {
             ElementKind::F32 => DtypeSupport::Supported,
             ElementKind::F64 if self.fp64 => DtypeSupport::Supported,
-            ElementKind::I32 | ElementKind::I64 => DtypeSupport::Supported,
+            d if int_ty(d).is_some() => DtypeSupport::Supported,
             _ => DtypeSupport::Unsupported,
         }
     }
@@ -980,10 +1050,11 @@ impl Backend for OpenClC {
         };
         let t = match plan.dtype {
             ElementKind::F32 => F32,
-            ElementKind::I32 => I32,
-            ElementKind::I64 => I64,
             ElementKind::F64 => F64,
-            _ => return Ok(Vec::new()),
+            d => match int_ty(d) {
+                Some(t) => t,
+                None => return Ok(Vec::new()),
+            },
         };
         let cx = Cx {
             n_inputs: plan.n_inputs,
@@ -1086,8 +1157,6 @@ impl Backend for OpenClC {
         }
         let t = match plan.dtype {
             ElementKind::F32 => F32,
-            ElementKind::I32 => I32,
-            ElementKind::I64 => I64,
             ElementKind::F64 if self.fp64 => F64,
             ElementKind::F64 => {
                 return Err(LowerError::UnsupportedDtype {
@@ -1097,12 +1166,16 @@ impl Backend for OpenClC {
                         .to_owned(),
                 });
             }
-            other => {
-                return Err(LowerError::UnsupportedDtype {
-                    dtype: other,
-                    detail: "opencl_c v1: f32, i32, i64 and (with cl_khr_fp64) f64 only".to_owned(),
-                });
-            }
+            other => match int_ty(other) {
+                Some(t) => t,
+                None => {
+                    return Err(LowerError::UnsupportedDtype {
+                        dtype: other,
+                        detail: "opencl_c v1: f32, f64 (with cl_khr_fp64) and the 8, 16, 32 and 64-bit integers only"
+                            .to_owned(),
+                    });
+                }
+            },
         };
         if plan.n_outputs != 1 {
             return Err(LowerError::UnsupportedPlanShape {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.32
+
+- Emitter: i8, u8, i16 and u16 elementwise kernels and scans (serial and block-scan variants). `+ - *` and `<<` compute in `uint` and convert back, so they wrap at the element width (a 16-bit product overflows `int`); shifts promote to `int` and take the count modulo 32, Unpopped's rule for every type narrower than 32 bits. 192 elementwise case runs plus the extended scan cases agree bit for bit with the oracle on all 3 laptop devices; the oracle also agrees with the ruled shift formula (X2).
+- Narrow-integer reductions are declined with a named reason: Unpopped's oracle scopes integer reductions to i32 and i64 and panics on a narrower dtype, so they would have no referee. bf16 and f16 are not started.
+- Internal: the emitter's integer limits (the Max and Min identities) come from the type, not a per-dtype match.
+
 ## 0.0.31
 
 - Deps: unpopped and unpopped-vocab 0.40.0 (Breaking upstream: `Stmt::AtomicRmw` in the kernel IR). The emitter lowers `KernelPlan` and never consumes the kernel-layer `Stmt` IR, so no arm is needed and no emitted kernel changes; a kernel-IR emitter (atomic add/max/min on integers) is not started. Every device differential passes unchanged on all 3 laptop devices.
