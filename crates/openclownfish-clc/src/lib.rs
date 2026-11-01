@@ -61,6 +61,23 @@ impl OpenClC {
     }
 }
 
+/// A 16-bit float format stored as its pattern in a `ushort` and computed in `float`.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Half {
+    Bf16,
+    F16,
+}
+
+impl Half {
+    /// The prefix of this format's helper functions in the kernel.
+    fn prefix(self) -> &'static str {
+        match self {
+            Half::Bf16 => "ocl_bf16",
+            Half::F16 => "ocl_f16",
+        }
+    }
+}
+
 /// The C spelling of the kernel's element type.
 #[derive(Copy, Clone)]
 struct Ty {
@@ -82,8 +99,8 @@ struct Ty {
     /// The element type of the buffers: `c` except for bf16, which is stored
     /// as its 16-bit pattern in a `ushort` and computed as `float`.
     store: &'static str,
-    /// bf16: loads and stores go through the codec in the kernel's helpers.
-    half: bool,
+    /// bf16 and f16: loads and stores go through the codec in the kernel's helpers.
+    half: Option<Half>,
 }
 
 const F32: Ty = Ty {
@@ -95,7 +112,7 @@ const F32: Ty = Ty {
     lo: "",
     hi: "",
     store: "float",
-    half: false,
+    half: None,
 };
 const F64: Ty = Ty {
     c: "double",
@@ -106,7 +123,7 @@ const F64: Ty = Ty {
     lo: "",
     hi: "",
     store: "double",
-    half: false,
+    half: None,
 };
 const I32: Ty = Ty {
     c: "int",
@@ -117,7 +134,7 @@ const I32: Ty = Ty {
     lo: "(-2147483647 - 1)",
     hi: "2147483647",
     store: "int",
-    half: false,
+    half: None,
 };
 const I64: Ty = Ty {
     c: "long",
@@ -128,7 +145,7 @@ const I64: Ty = Ty {
     lo: "(-9223372036854775807L - 1L)",
     hi: "9223372036854775807L",
     store: "long",
-    half: false,
+    half: None,
 };
 // The narrow integers compute `+ - *` and `<<` in `uint` (C promotes them to
 // `int`, where a 16-bit product can overflow), and convert back, which wraps at
@@ -143,7 +160,7 @@ const I8: Ty = Ty {
     lo: "((char)-128)",
     hi: "((char)127)",
     store: "char",
-    half: false,
+    half: None,
 };
 const U8: Ty = Ty {
     c: "uchar",
@@ -154,7 +171,7 @@ const U8: Ty = Ty {
     lo: "((uchar)0)",
     hi: "((uchar)255)",
     store: "uchar",
-    half: false,
+    half: None,
 };
 const I16: Ty = Ty {
     c: "short",
@@ -165,7 +182,7 @@ const I16: Ty = Ty {
     lo: "((short)-32768)",
     hi: "((short)32767)",
     store: "short",
-    half: false,
+    half: None,
 };
 const U16: Ty = Ty {
     c: "ushort",
@@ -176,11 +193,11 @@ const U16: Ty = Ty {
     lo: "((ushort)0)",
     hi: "((ushort)65535)",
     store: "ushort",
-    half: false,
+    half: None,
 };
 
 // bf16 is stored as its pattern in a `ushort` and computed in `float`: a load
-// is a shift, a store rounds to nearest even (see `bf16_value`).
+// is a shift, a store rounds to nearest even (see `half_value`).
 const BF16: Ty = Ty {
     c: "float",
     suffix: "f",
@@ -190,7 +207,21 @@ const BF16: Ty = Ty {
     lo: "",
     hi: "",
     store: "ushort",
-    half: true,
+    half: Some(Half::Bf16),
+};
+
+// f16 the same way (no `cl_khr_fp16`): stored as its pattern, computed in `float`,
+// through an integer codec in the kernel.
+const F16: Ty = Ty {
+    c: "float",
+    suffix: "f",
+    tag: "f16",
+    int: false,
+    uns: "",
+    lo: "",
+    hi: "",
+    store: "ushort",
+    half: Some(Half::F16),
 };
 
 /// The C spelling for a dtype this emitter serves without an extension.
@@ -304,8 +335,8 @@ fn expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
     if cx.t.int {
         return int_expr(e, cx);
     }
-    if cx.t.half {
-        return Ok(bf16_value(e, cx)?.float());
+    if cx.t.half.is_some() {
+        return Ok(half_value(e, cx)?.float());
     }
     let (t, n_inputs) = (cx.t, cx.n_inputs);
     let sfx = t.suffix;
@@ -407,75 +438,131 @@ fn expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
     })
 }
 
-/// A bf16 value inside an expression: the 16-bit pattern as stored (`Bits`), or a
-/// `float` computed from patterns (`Float`). This mirrors Unpopped's oracle, where
-/// `Neg`, `Abs`, `Max`, `Min` and `Select` on stored values move bits (a NaN
-/// payload, the sign of a zero survive) and every other operation computes in
-/// float and rounds once, to nearest even, when stored.
-enum Bf {
-    Bits(String),
-    Float(String),
+/// A 16-bit float inside an expression: the pattern as stored (`bits`), or a
+/// `float` computed from patterns. This mirrors Unpopped's oracle, where `Neg`,
+/// `Abs`, `Max`, `Min` and `Select` on stored values move bits (a NaN payload and
+/// the sign of a zero survive) and every other operation computes in float and
+/// rounds once, to nearest even, when stored.
+struct Hv {
+    code: String,
+    /// `code` is a stored pattern, not a float.
+    bits: bool,
+    fmt: Half,
 }
 
-impl Bf {
+impl Hv {
+    fn pattern(code: String, fmt: Half) -> Self {
+        Self {
+            code,
+            bits: true,
+            fmt,
+        }
+    }
+
+    fn float_of(code: String, fmt: Half) -> Self {
+        Self {
+            code,
+            bits: false,
+            fmt,
+        }
+    }
+
+    /// As a `float`.
     fn float(self) -> String {
-        match self {
-            Bf::Bits(b) => format!("ocl_bf16_f({b})"),
-            Bf::Float(f) => f,
+        if self.bits {
+            format!("{}_f({})", self.fmt.prefix(), self.code)
+        } else {
+            self.code
         }
     }
 
+    /// As a stored pattern.
     fn bits(self) -> String {
-        match self {
-            Bf::Bits(b) => b,
-            Bf::Float(f) => format!("ocl_bf16_b({f})"),
+        if self.bits {
+            self.code
+        } else {
+            format!("{}_b({})", self.fmt.prefix(), self.code)
         }
     }
 }
 
-/// Spell `e` over bf16 data: a stored pattern or a float, see [`Bf`].
-fn bf16_value(e: &ScalarExpr, cx: Cx<'_>) -> Result<Bf, LowerError> {
+/// Whether `f` is a finite value the format holds exactly.
+fn half_exact(f: f32, fmt: Half) -> bool {
+    if !f.is_finite() {
+        return false;
+    }
+    match fmt {
+        Half::Bf16 => f.to_bits() & 0xffff == 0,
+        Half::F16 => {
+            let a = f.abs();
+            if a == 0.0 {
+                true
+            } else if a >= 6.103_515_6e-5 {
+                // 2^-14 and up: ten mantissa bits, at most 65504.
+                f.to_bits() & 0x1fff == 0 && a <= 65504.0
+            } else {
+                // Subnormal: a whole number of 2^-24.
+                (a * 16_777_216.0).fract() == 0.0
+            }
+        }
+    }
+}
+
+/// Spell `e` over bf16 or f16 data, see [`Hv`].
+fn half_value(e: &ScalarExpr, cx: Cx<'_>) -> Result<Hv, LowerError> {
+    let Some(fmt) = cx.t.half else {
+        return Err(refuse("internal: a half expression over a non-half type"));
+    };
+    let p = fmt.prefix();
     let n_inputs = cx.n_inputs;
-    let flt = |a: &ScalarExpr, op: &str, b: &ScalarExpr| -> Result<Bf, LowerError> {
-        Ok(Bf::Float(format!(
-            "({} {op} {})",
-            bf16_value(a, cx)?.float(),
-            bf16_value(b, cx)?.float()
-        )))
+    let flt = |a: &ScalarExpr, op: &str, b: &ScalarExpr| -> Result<Hv, LowerError> {
+        Ok(Hv::float_of(
+            format!(
+                "({} {op} {})",
+                half_value(a, cx)?.float(),
+                half_value(b, cx)?.float()
+            ),
+            fmt,
+        ))
     };
     Ok(match e {
         ScalarExpr::Input(_) if cx.reduced => {
             return Err(refuse("a reduction post-expression cannot read an input"));
         }
-        ScalarExpr::Input(i) if *i < n_inputs => Bf::Bits(input_leaf(*i, cx)),
+        ScalarExpr::Input(i) if *i < n_inputs => Hv::pattern(input_leaf(*i, cx), fmt),
         ScalarExpr::Input(i) => return Err(refuse(format!("input {i} out of range"))),
         ScalarExpr::Const(c) => {
             #[allow(clippy::cast_possible_truncation)]
             let f = *c as f32;
-            if !f.is_finite() || f64::from(f) != *c || f.to_bits() & 0xffff != 0 {
+            if f64::from(f) != *c || !half_exact(f, fmt) {
                 return Err(refuse(format!(
-                    "constant {c:?} is not exactly representable as a finite bf16"
+                    "constant {c:?} is not exactly representable as a finite {}",
+                    cx.t.tag
                 )));
             }
-            Bf::Float(format!("{f:?}f"))
+            Hv::float_of(format!("{f:?}f"), fmt)
         }
         ScalarExpr::Add(a, b) => flt(a, "+", b)?,
         ScalarExpr::Sub(a, b) => flt(a, "-", b)?,
         ScalarExpr::Mul(a, b) => flt(a, "*", b)?,
         ScalarExpr::Div(a, b) => flt(a, "/", b)?,
         ScalarExpr::Unary(op, a) => {
-            let x = bf16_value(a, cx)?;
-            match (op, x) {
-                (UnaryOp::Neg, Bf::Bits(b)) => Bf::Bits(format!("((ushort)({b} ^ 0x8000u))")),
-                (UnaryOp::Abs, Bf::Bits(b)) => Bf::Bits(format!("((ushort)({b} & 0x7fffu))")),
-                (UnaryOp::Neg, Bf::Float(f)) => Bf::Float(format!("(-{f})")),
-                (UnaryOp::Abs, Bf::Float(f)) => Bf::Float(format!("fabs({f})")),
-                (UnaryOp::Sqr, x) => Bf::Float(format!("ocl_sqr({})", x.float())),
-                (UnaryOp::Recip, x) => Bf::Float(format!("(1.0f / {})", x.float())),
-                (UnaryOp::Sqrt, x) => Bf::Float(format!("sqrt({})", x.float())),
-                (UnaryOp::Rsqrt, x) => Bf::Float(format!("rsqrt({})", x.float())),
-                (UnaryOp::Exp, x) => Bf::Float(format!("exp({})", x.float())),
-                (UnaryOp::Log, x) => Bf::Float(format!("log({})", x.float())),
+            let x = half_value(a, cx)?;
+            match (op, x.bits) {
+                (UnaryOp::Neg, true) => {
+                    Hv::pattern(format!("((ushort)({} ^ 0x8000u))", x.code), fmt)
+                }
+                (UnaryOp::Abs, true) => {
+                    Hv::pattern(format!("((ushort)({} & 0x7fffu))", x.code), fmt)
+                }
+                (UnaryOp::Neg, false) => Hv::float_of(format!("(-{})", x.code), fmt),
+                (UnaryOp::Abs, false) => Hv::float_of(format!("fabs({})", x.code), fmt),
+                (UnaryOp::Sqr, _) => Hv::float_of(format!("ocl_sqr({})", x.float()), fmt),
+                (UnaryOp::Recip, _) => Hv::float_of(format!("(1.0f / {})", x.float()), fmt),
+                (UnaryOp::Sqrt, _) => Hv::float_of(format!("sqrt({})", x.float()), fmt),
+                (UnaryOp::Rsqrt, _) => Hv::float_of(format!("rsqrt({})", x.float()), fmt),
+                (UnaryOp::Exp, _) => Hv::float_of(format!("exp({})", x.float()), fmt),
+                (UnaryOp::Log, _) => Hv::float_of(format!("log({})", x.float()), fmt),
                 (other, _) => return Err(refuse(format!("unary op not supported: {other:?}"))),
             }
         }
@@ -497,30 +584,39 @@ fn bf16_value(e: &ScalarExpr, cx: Cx<'_>) -> Result<Bf, LowerError> {
                 BinaryOp::CmpGt => ">",
                 _ => ">=",
             };
-            Bf::Float(format!(
-                "(({} {sym} {}) ? 1.0f : 0.0f)",
-                bf16_value(a, cx)?.float(),
-                bf16_value(b, cx)?.float()
-            ))
+            Hv::float_of(
+                format!(
+                    "(({} {sym} {}) ? 1.0f : 0.0f)",
+                    half_value(a, cx)?.float(),
+                    half_value(b, cx)?.float()
+                ),
+                fmt,
+            )
         }
         // The chosen arm moves; the condition is tested `!= 0` as a float.
-        ScalarExpr::Select(c, a, b) => Bf::Bits(format!(
-            "(({} != 0.0f) ? {} : {})",
-            bf16_value(c, cx)?.float(),
-            bf16_value(a, cx)?.bits(),
-            bf16_value(b, cx)?.bits()
-        )),
+        ScalarExpr::Select(c, a, b) => Hv::pattern(
+            format!(
+                "(({} != 0.0f) ? {} : {})",
+                half_value(c, cx)?.float(),
+                half_value(a, cx)?.bits(),
+                half_value(b, cx)?.bits()
+            ),
+            fmt,
+        ),
         ScalarExpr::Binary(op @ (BinaryOp::Max | BinaryOp::Min), a, b) => {
             let name = if matches!(op, BinaryOp::Max) {
-                "ocl_bf16_max"
+                "max"
             } else {
-                "ocl_bf16_min"
+                "min"
             };
-            Bf::Bits(format!(
-                "{name}({}, {})",
-                bf16_value(a, cx)?.bits(),
-                bf16_value(b, cx)?.bits()
-            ))
+            Hv::pattern(
+                format!(
+                    "{p}_{name}({}, {})",
+                    half_value(a, cx)?.bits(),
+                    half_value(b, cx)?.bits()
+                ),
+                fmt,
+            )
         }
         ScalarExpr::Binary(op, a, b) => {
             let name = match op {
@@ -529,38 +625,96 @@ fn bf16_value(e: &ScalarExpr, cx: Cx<'_>) -> Result<Bf, LowerError> {
                 BinaryOp::Pow => "pow",
                 other => return Err(refuse(format!("binary op not supported: {other:?}"))),
             };
-            Bf::Float(format!(
-                "{name}({}, {})",
-                bf16_value(a, cx)?.float(),
-                bf16_value(b, cx)?.float()
-            ))
+            Hv::float_of(
+                format!(
+                    "{name}({}, {})",
+                    half_value(a, cx)?.float(),
+                    half_value(b, cx)?.float()
+                ),
+                fmt,
+            )
         }
         other => return Err(refuse(format!("expression node not supported: {other:?}"))),
     })
 }
 
-/// The bf16 codec and the bit-moving `Max`/`Min`, emitted when a kernel uses them.
-/// A load is exact (the pattern is the high half of a float). A store rounds to
-/// nearest even and keeps a NaN quiet with its payload's top bits, as the oracle
-/// does. `Max`/`Min` compare as floats but return a pattern unchanged: NaN first
-/// (an `a` NaN wins, else a `b` NaN), a tie keeps `a`.
-const BF16_HELPERS: &str = "inline float ocl_bf16_f(ushort h) { return as_float(((uint)h) << 16); }
-inline ushort ocl_bf16_b(float x) {
-    uint u = as_uint(x);
-    if ((u & 0x7fffffffu) > 0x7f800000u) { return (ushort)((u >> 16) | 0x0040u); }
-    return (ushort)((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
-}
-inline ushort ocl_bf16_max(ushort a, ushort b) {
-    float x = ocl_bf16_f(a); float y = ocl_bf16_f(b);
+/// The codec and the bit-moving `Max`/`Min` for a 16-bit float, emitted when a
+/// kernel uses them. A load is exact. A store rounds to nearest even. The oracle
+/// keeps a bf16 NaN quiet with its payload's top bits and stores an f16 NaN as
+/// the canonical quiet NaN with its sign. `Max`/`Min` compare as floats but return
+/// a pattern unchanged: NaN first (an `a` NaN wins, else a `b` NaN), a tie keeps `a`.
+fn half_helpers(fmt: Half) -> String {
+    let p = fmt.prefix();
+    let codec = match fmt {
+        Half::Bf16 => BF16_CODEC,
+        Half::F16 => F16_CODEC,
+    };
+    let minmax = "inline ushort P_max(ushort a, ushort b) {
+    float x = P_f(a); float y = P_f(b);
     if (isnan(x)) { return a; }
     if (isnan(y)) { return b; }
     return x >= y ? a : b;
 }
-inline ushort ocl_bf16_min(ushort a, ushort b) {
-    float x = ocl_bf16_f(a); float y = ocl_bf16_f(b);
+inline ushort P_min(ushort a, ushort b) {
+    float x = P_f(a); float y = P_f(b);
     if (isnan(x)) { return a; }
     if (isnan(y)) { return b; }
     return x <= y ? a : b;
+}
+";
+    format!("{codec}{minmax}").replace("P_", &format!("{p}_"))
+}
+
+const BF16_CODEC: &str = "inline float P_f(ushort h) { return as_float(((uint)h) << 16); }
+inline ushort P_b(float x) {
+    uint u = as_uint(x);
+    if ((u & 0x7fffffffu) > 0x7f800000u) { return (ushort)((u >> 16) | 0x0040u); }
+    return (ushort)((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
+}
+";
+
+/// Integer codec for binary16, so the kernel needs no `cl_khr_fp16`: decode
+/// widens (normalising a subnormal), encode rounds to nearest even.
+const F16_CODEC: &str = "inline float P_f(ushort h) {
+    uint s = ((uint)h & 0x8000u) << 16;
+    uint e = ((uint)h >> 10) & 0x1fu;
+    uint m = (uint)h & 0x3ffu;
+    uint u;
+    if (e == 0u) {
+        if (m == 0u) {
+            u = s;
+        } else {
+            int sh = (int)clz(m) - 21;
+            m = (m << sh) & 0x3ffu;
+            u = s | ((uint)(113 - sh) << 23) | (m << 13);
+        }
+    } else if (e == 31u) {
+        u = s | 0x7f800000u | (m << 13);
+    } else {
+        u = s | ((e + 112u) << 23) | (m << 13);
+    }
+    return as_float(u);
+}
+inline ushort P_b(float x) {
+    uint u = as_uint(x);
+    uint s = (u >> 16) & 0x8000u;
+    uint a = u & 0x7fffffffu;
+    if (a > 0x7f800000u) { return (ushort)(s | 0x7e00u); }
+    if (a >= 0x477ff000u) { return (ushort)(s | 0x7c00u); }
+    if (a < 0x38800000u) {
+        if (a <= 0x33000000u) { return (ushort)s; }
+        uint e = a >> 23;
+        uint m = (a & 0x7fffffu) | 0x800000u;
+        uint sh = 126u - e;
+        uint q = m >> sh;
+        uint rem = m & ((1u << sh) - 1u);
+        uint hf = 1u << (sh - 1u);
+        if (rem > hf || (rem == hf && (q & 1u) != 0u)) { q += 1u; }
+        return (ushort)(s | q);
+    }
+    uint r = a - 0x38000000u;
+    r = r + 0xfffu + ((r >> 13) & 1u);
+    return (ushort)(s | (r >> 13));
 }
 ";
 
@@ -1228,7 +1382,7 @@ impl Backend for OpenClC {
         match dtype {
             ElementKind::F32 => DtypeSupport::Supported,
             ElementKind::F64 if self.fp64 => DtypeSupport::Supported,
-            ElementKind::Bf16 => DtypeSupport::Supported,
+            ElementKind::Bf16 | ElementKind::F16 => DtypeSupport::Supported,
             d if int_ty(d).is_some() => DtypeSupport::Supported,
             _ => DtypeSupport::Unsupported,
         }
@@ -1354,6 +1508,7 @@ impl Backend for OpenClC {
         let t = match plan.dtype {
             ElementKind::F32 => F32,
             ElementKind::Bf16 => BF16,
+            ElementKind::F16 => F16,
             ElementKind::F64 if self.fp64 => F64,
             ElementKind::F64 => {
                 return Err(LowerError::UnsupportedDtype {
@@ -1368,7 +1523,7 @@ impl Backend for OpenClC {
                 None => {
                     return Err(LowerError::UnsupportedDtype {
                         dtype: other,
-                        detail: "opencl_c v1: f32, bf16, f64 (with cl_khr_fp64) and the 8, 16, 32 and 64-bit integers only"
+                        detail: "opencl_c v1: f32, bf16, f16, f64 (with cl_khr_fp64) and the 8, 16, 32 and 64-bit integers only"
                             .to_owned(),
                     });
                 }
@@ -1385,15 +1540,16 @@ impl Backend for OpenClC {
         // `Vectorized` is a width hint for backends that vectorise; this kernel
         // is element-counted (`effective_count_width` stays 1), which is correct
         // for any contiguous elementwise plan.
-        if t.half
+        if t.half.is_some()
             && !matches!(
                 plan.schedule,
                 Schedule::Scalar | Schedule::Vectorized { .. } | Schedule::Strided
             )
         {
-            return Err(refuse(
-                "bf16 reductions and scans (elementwise only so far)",
-            ));
+            return Err(refuse(format!(
+                "{} reductions and scans (elementwise only so far)",
+                t.tag
+            )));
         }
         let mut reduction = None;
         let mut scan = None;
@@ -1424,8 +1580,8 @@ impl Backend for OpenClC {
             fold: reduction.is_some(),
         };
         // A scan folds its per-element pre-map; the epilogue is the identity.
-        let body = if t.half {
-            bf16_value(plan.body, cx)?.bits()
+        let body = if t.half.is_some() {
+            half_value(plan.body, cx)?.bits()
         } else {
             expr(scan.as_ref().map_or(plan.body, |(_, pre)| pre), cx)?
         };
@@ -1473,8 +1629,8 @@ impl Backend for OpenClC {
                 helpers = true;
             }
         }
-        if t.half && body.contains("ocl_bf16_") {
-            s.push_str(BF16_HELPERS);
+        if let Some(h) = t.half.filter(|h| body.contains(h.prefix())) {
+            s.push_str(&half_helpers(h));
             helpers = true;
         }
         if helpers {
