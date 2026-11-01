@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.33
+
+- Emitter: bf16 elementwise kernels, contiguous and strided (X2 PR2). bf16 is stored as its 16-bit pattern in a `ushort` and computed in `float`: a load is a shift, a store rounds to nearest even and keeps a NaN quiet with its payload's top bits. As in Unpopped's oracle, `Neg`, `Abs`, `Max`, `Min` and `Select` on stored values move bits (a NaN payload, a signalling NaN and the sign of a zero survive); every other operation computes in float and rounds once at the store. `+ - * /`, the comparisons, `Select`, `Max`/`Min`, `Neg`/`Abs`, `sqr recip sqrt rsqrt exp log` are served; a constant must be exactly representable in bf16. 126 elementwise case runs plus the strided cases agree with the oracle on all 3 laptop devices: bit moves, comparisons and `+ - *` byte for byte (two NaNs agree where an operation creates one), `/ sqrt exp log` within one bf16 step.
+- bf16 reductions and scans are declined by name (elementwise only so far); f16 is the next PR.
+
 ## 0.0.32
 
 - Emitter: i8, u8, i16 and u16 elementwise kernels and scans (serial and block-scan variants). `+ - *` and `<<` compute in `uint` and convert back, so they wrap at the element width (a 16-bit product overflows `int`); shifts promote to `int` and take the count modulo 32, Unpopped's rule for every type narrower than 32 bits. 192 elementwise case runs plus the extended scan cases agree bit for bit with the oracle on all 3 laptop devices; the oracle also agrees with the ruled shift formula (X2).
