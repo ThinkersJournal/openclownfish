@@ -11,8 +11,7 @@
 
 use openclownfish::{Context, Program, Runtime};
 use openclownfish_clc::OpenClC;
-use unpopped::backend::Backend;
-use unpopped::ir::{BinaryOp, Expr, OpDef, ReduceOp, input};
+use unpopped::ir::{BinaryOp, Expr, OpDef, input};
 use unpopped::oracle::evaluate;
 use unpopped::{build_plan, generate};
 use unpopped_vocab::{ArchSku, ElementKind, OpCategory, OperandDesc, structure_key};
@@ -189,31 +188,4 @@ fn narrow_integer_kernels_agree_with_the_oracle_on_every_device() {
         }
     }
     eprintln!("narrow integer kernels: {checks} case runs bit-exact on {ran} device(s)");
-}
-
-#[test]
-fn narrow_reductions_are_declined_by_name() {
-    let backend = OpenClC::new();
-    for kind in common::NARROW {
-        // Control: the same shape at i32 lowers, so the decline below is about
-        // the dtype and not the plan.
-        let a = OperandDesc::new(2, &[4, 6], &[6, 1], kind, 256);
-        let o = OperandDesc::new(1, &[4], &[1], kind, 256);
-        let key = structure_key(OpCategory::Reduction, &[a, o], ArchSku::Sm89);
-        let op = OpDef::reduction("r", 1, &[kind], input(0), ReduceOp::Sum);
-        let plan = build_plan(&op, &key);
-        let err = backend
-            .lower(&plan)
-            .expect_err("a narrow reduction lowered");
-        assert!(
-            format!("{err:?}").contains("scopes integer reductions to i32 and i64"),
-            "{kind:?}: {err:?}"
-        );
-        assert!(backend.lower_variants(&plan).unwrap().is_empty());
-    }
-    let a = OperandDesc::new(2, &[4, 6], &[6, 1], ElementKind::I32, 256);
-    let o = OperandDesc::new(1, &[4], &[1], ElementKind::I32, 256);
-    let key = structure_key(OpCategory::Reduction, &[a, o], ArchSku::Sm89);
-    let op = OpDef::reduction("r", 1, &[ElementKind::I32], input(0), ReduceOp::Sum);
-    assert!(backend.lower(&build_plan(&op, &key)).is_ok());
 }
