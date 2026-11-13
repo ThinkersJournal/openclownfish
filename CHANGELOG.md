@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.39
+
+- Docs: ROADMAP row PS1 records the patent sweep for async scheduling (PM notice, board 431 hit 22): this crate lowers no `AsyncWait`, `CopyAsync` or `AsyncCommit`, and the parser refuses OpenCL's `async_work_group_copy` and `wait_group_events` by name. No code change.
+
 ## 0.0.37
 
 - Tests: ROADMAP E18 idioms proved through this crate's `OPENCL_C` front end. A `Mean` post, exclusive, reverse and reverse-exclusive scans lift, emit and agree bit for bit with the source kernel on every device (11 cases per device); the N-D `get_global_id` elementwise form and the 2-D row loop lift, and near-miss spellings are refused.
