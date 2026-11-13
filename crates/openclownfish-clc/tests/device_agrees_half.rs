@@ -60,6 +60,11 @@ enum Check {
     ArithNan,
     /// Within one step of the format (and two NaNs agree).
     Ulp1,
+    /// `FmaxIeee` and `FminIeee`: byte for byte, except that two NaNs agree and that the sign
+    /// of a zero result is open when both inputs are zero (IEEE 754 maxNum/minNum, OpenCL
+    /// `fmax` and Rust's `f64::max` all leave a zero tie unspecified; the f32 differential
+    /// does the same). Checked at the call site, which sees the inputs.
+    ZeroTie,
 }
 
 fn agrees(kind: ElementKind, check: Check, got: u16, want: u16) -> bool {
@@ -68,7 +73,7 @@ fn agrees(kind: ElementKind, check: Check, got: u16, want: u16) -> bool {
     }
     match check {
         Check::Bits => false,
-        Check::ArithNan => is_nan(kind, got) && is_nan(kind, want),
+        Check::ArithNan | Check::ZeroTie => is_nan(kind, got) && is_nan(kind, want),
         Check::Ulp1 => {
             (is_nan(kind, got) && is_nan(kind, want))
                 || (got >> 15 == want >> 15 && (got & 0x7fff).abs_diff(want & 0x7fff) <= 1)
@@ -104,6 +109,11 @@ fn cases() -> Vec<Case> {
         two("div", input(0) / input(1), Check::Ulp1),
         two("max", bin(BinaryOp::Max), Check::Bits),
         two("min", bin(BinaryOp::Min), Check::Bits),
+        // IEEE maxNum/minNum: a NaN operand is ignored, so the result is computed, not a
+        // bit move; two NaNs agree (the NaN made from two NaNs has a hardware-chosen payload).
+        two("fmax_ieee", bin(BinaryOp::FmaxIeee), Check::ZeroTie),
+        two("fmin_ieee", bin(BinaryOp::FminIeee), Check::ZeroTie),
+        two("pow", bin(BinaryOp::Pow), Check::Ulp1),
         two("cmplt", bin(BinaryOp::CmpLt), Check::Bits),
         two("cmpeq", bin(BinaryOp::CmpEq), Check::Bits),
         two("cmpne", bin(BinaryOp::CmpNe), Check::Bits),
@@ -225,8 +235,12 @@ fn half_kernels_agree_with_the_oracle_on_every_device() {
                         let want = evaluate(&plan, &operands, &tb, &[]);
                         let want = read_bits(&want[0].raw_bytes()[..n_el * 2]);
                         for i in 0..n_el {
+                            let zero_tie = matches!(c.check, Check::ZeroTie)
+                                && [a[i], b[i], got[i], want[i]]
+                                    .iter()
+                                    .all(|v| v & 0x7fff == 0);
                             assert!(
-                                agrees(kind, c.check, got[i], want[i]),
+                                zero_tie || agrees(kind, c.check, got[i], want[i]),
                                 "{label}: {kind:?} {} n={n_el} i={i} a={:#06x} b={:#06x}: device {:#06x}, oracle {:#06x}\n{}",
                                 c.name,
                                 a[i],
