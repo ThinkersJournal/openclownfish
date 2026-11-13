@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.39
+
+- Docs: ROADMAP row PS1 records the patent sweep for async scheduling (PM notice, board 431 hit 22): this crate lowers no `AsyncWait`, `CopyAsync` or `AsyncCommit`, and the parser refuses OpenCL's `async_work_group_copy` and `wait_group_events` by name. The same row covers `Stmt::Collective` (barrier aggregation, board 431 hit 23): no lowering here, and the parser refuses `work_group_` and `sub_group_`. No code change.
+
 ## 0.0.38
 
 - Emitter: i8, u8, i16 and u16 `Sum`, `Prod`, `Max` and `Min` reductions now lower (ROADMAP E19). Unpopped's oracle covers them from 0.40.16, so the by-name decline is gone; integer `Mean` stays declined by name.
