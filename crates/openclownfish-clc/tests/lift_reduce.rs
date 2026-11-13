@@ -2,8 +2,11 @@
 //! run on every device against the original source kernel run as written.
 //!
 //! The source kernels are the naive one-work-item accumulator loops the lifter
-//! recognises. Data is exactly representable, so a prefix or fold in any order
-//! is exact and the two kernels must agree bit for bit.
+//! recognises, and the idioms of ROADMAP E18 (a `Mean` post, exclusive and reverse
+//! scans), through this crate's `OPENCL_C` front end rather than Unpopped's test one.
+//! Data is exactly representable, so a prefix or fold in any order is exact and the
+//! two kernels must agree bit for bit (the `Mean` divides the same float sum by the
+//! same float in both).
 
 use openclownfish::{Context, Program, Runtime};
 use openclownfish_clc::{OPENCL_C, OpenClC};
@@ -68,6 +71,48 @@ const CASES: [Case; 7] = [
     },
 ];
 
+/// A whole source kernel for an idiom (ROADMAP E18), and what its lift must say.
+struct Idiom {
+    name: &'static str,
+    scan: bool,
+    src: &'static str,
+    /// A fragment of the lifted access's `Debug` text that must be there, so a lift to the
+    /// wrong operation cannot agree with its source by luck.
+    lifted: &'static str,
+}
+
+const IDIOMS: [Idiom; 4] = [
+    Idiom {
+        name: "mean",
+        scan: false,
+        src: "__kernel void k(__global const float* in0, __global float* out, long n) { \
+              float acc = 0.0f; for (long i = 0; i < n; ++i) { acc += in0[i]; } \
+              out[0] = acc / (float)n; }",
+        lifted: "op: Mean",
+    },
+    Idiom {
+        name: "cumsum_exclusive",
+        scan: true,
+        src: "__kernel void k(__global const float* in0, __global float* out, long n) { \
+              float acc = 0.0f; for (long i = 0; i < n; ++i) { out[i] = acc; acc += in0[i]; } }",
+        lifted: "reverse: false, exclusive: true",
+    },
+    Idiom {
+        name: "cumsum_reverse",
+        scan: true,
+        src: "__kernel void k(__global const float* in0, __global float* out, long n) { \
+              float acc = 0.0f; for (long i = n - 1; i >= 0; --i) { acc += in0[i]; out[i] = acc; } }",
+        lifted: "reverse: true, exclusive: false",
+    },
+    Idiom {
+        name: "cumsum_reverse_exclusive",
+        scan: true,
+        src: "__kernel void k(__global const float* in0, __global float* out, long n) { \
+              float acc = 0.0f; for (long i = n - 1; i >= 0; --i) { out[i] = acc; acc += in0[i]; } }",
+        lifted: "reverse: true, exclusive: true",
+    },
+];
+
 fn source(c: &Case) -> String {
     let store_in = if c.scan { " out[i] = acc;" } else { "" };
     let store_out = if c.scan { "" } else { " out[0] = acc;" };
@@ -76,6 +121,19 @@ fn source(c: &Case) -> String {
          float acc = {}; for (long i = 0; i < n; ++i) {{ {}{store_in} }}{store_out} }}",
         c.init, c.step
     )
+}
+
+/// Every case as (name, is a scan, source, required `Debug` fragment of the lifted access).
+fn all() -> Vec<(&'static str, bool, String, &'static str)> {
+    CASES
+        .iter()
+        .map(|c| (c.name, c.scan, source(c), ""))
+        .chain(
+            IDIOMS
+                .iter()
+                .map(|i| (i.name, i.scan, i.src.to_owned(), i.lifted)),
+        )
+        .collect()
 }
 
 fn data() -> Vec<f32> {
@@ -96,6 +154,7 @@ fn lifted_reductions_and_scans_match_the_source_kernels_on_every_device() {
     let backend = OpenClC::new();
     let input = data();
     let n = N as i64;
+    let cases = all();
     let mut ran = 0;
     for p in platforms {
         let Ok(devices) = p.devices() else { continue };
@@ -109,39 +168,39 @@ fn lifted_reductions_and_scans_match_the_source_kernels_on_every_device() {
             let queue = ctx.create_queue().unwrap();
             let inb = ctx.create_buffer(N * 4).unwrap();
             queue.write_buffer(&inb, 0, &bytes(&input)).unwrap();
-            for c in &CASES {
-                let src = source(c);
-                let lifted = if c.scan {
-                    lift_scan(&OPENCL_C, &src, c.name, F32)
+            for (name, is_scan, src, want_lift) in &cases {
+                let (name, is_scan) = (*name, *is_scan);
+                let lifted = if is_scan {
+                    lift_scan(&OPENCL_C, src, "k", F32)
                 } else {
-                    lift_reduction(&OPENCL_C, &src, c.name, F32)
+                    lift_reduction(&OPENCL_C, src, "k", F32)
                 }
-                .unwrap_or_else(|e| panic!("{}: does not lift: {e:?}\n{src}", c.name))
+                .unwrap_or_else(|e| panic!("{name}: does not lift: {e:?}\n{src}"))
                 .op;
                 assert!(
                     matches!(
-                        (&lifted.access, c.scan),
+                        (&lifted.access, is_scan),
                         (Access::Scan { .. }, true) | (Access::Reduction { .. }, false)
                     ),
-                    "{}: wrong access {:?}",
-                    c.name,
+                    "{name}: wrong access {:?}",
+                    lifted.access
+                );
+                assert!(
+                    format!("{:?}", lifted.access).contains(want_lift),
+                    "{name}: the lift is not {want_lift:?}: {:?}",
                     lifted.access
                 );
                 // The unknown-class entry point agrees with the explicit one.
                 assert_eq!(
-                    format!(
-                        "{:?}",
-                        lift(&OPENCL_C, &src, c.name, F32).unwrap().op.access
-                    ),
+                    format!("{:?}", lift(&OPENCL_C, src, "k", F32).unwrap().op.access),
                     format!("{:?}", lifted.access),
-                    "{}",
-                    c.name
+                    "{name}"
                 );
 
                 // Reference: the source kernel as written, one work item.
-                let out_len = if c.scan { N } else { 1 };
+                let out_len = if is_scan { N } else { 1 };
                 let run_src = {
-                    let prog = Program::build(&ctx, &src, "").unwrap();
+                    let prog = Program::build(&ctx, src, "").unwrap();
                     let mut k = prog.kernel("k").unwrap();
                     let out = ctx.create_buffer(out_len * 4).unwrap();
                     queue
@@ -163,7 +222,7 @@ fn lifted_reductions_and_scans_match_the_source_kernels_on_every_device() {
 
                 // Emitted from the lifted op.
                 let a = OperandDesc::new(1, &[n], &[1], ElementKind::F32, 256);
-                let (cat, o) = if c.scan {
+                let (cat, o) = if is_scan {
                     (OpCategory::Scan, a)
                 } else {
                     (
@@ -175,7 +234,7 @@ fn lifted_reductions_and_scans_match_the_source_kernels_on_every_device() {
                 let _ = build_plan(&lifted, &key);
                 let kernel = generate(&lifted, &key, &backend);
                 let prog = Program::build(&ctx, &kernel.source, "")
-                    .unwrap_or_else(|e| panic!("{label}: {}: {e}\n{}", c.name, kernel.source));
+                    .unwrap_or_else(|e| panic!("{label}: {name}: {e}\n{}", kernel.source));
                 let mut k = prog.kernel(&kernel.name).unwrap();
                 let out = ctx.create_buffer(out_len * 4).unwrap();
                 queue
@@ -183,7 +242,7 @@ fn lifted_reductions_and_scans_match_the_source_kernels_on_every_device() {
                     .unwrap();
                 k.set_arg_buffer(0, &inb).unwrap();
                 k.set_arg_buffer(1, &out).unwrap();
-                if c.scan {
+                if is_scan {
                     k.set_arg_i64(2, 1).unwrap(); // rows
                     k.set_arg_i64(3, n).unwrap(); // row length
                 } else {
@@ -199,11 +258,11 @@ fn lifted_reductions_and_scans_match_the_source_kernels_on_every_device() {
                     .unwrap();
                 let mut got = vec![0u8; out_len * 4];
                 queue.read_buffer(&out, 0, &mut got).unwrap();
-                assert_eq!(got, run_src, "{label}: {}\n{}", c.name, kernel.source);
+                assert_eq!(got, run_src, "{label}: {name}\n{}", kernel.source);
             }
             eprintln!(
                 "{label}: {} lifted kernels agree with their source",
-                CASES.len()
+                cases.len()
             );
             ran += 1;
         }

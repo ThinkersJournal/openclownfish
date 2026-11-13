@@ -1,9 +1,9 @@
 //! OpenCL C source lifted into Unpopped's IR, and round-tripped to the emitter.
 
 use openclownfish_clc::{OPENCL_C, OpenClC};
-use unpopped::convert::lift_elementwise;
+use unpopped::convert::{lift_elementwise, lift_reduction};
 use unpopped::generate;
-use unpopped::ir::{BinaryOp, OpDef, UnaryOp, input, konst};
+use unpopped::ir::{BinaryOp, OpDef, ReduceOp, UnaryOp, input, konst};
 use unpopped::lift::LiftError;
 use unpopped_vocab::{ArchSku, ElementKind, OpCategory, OperandDesc, structure_key};
 
@@ -154,4 +154,66 @@ fn lifted_sqrt_emits_the_same_kernel_as_the_hand_built_one() {
         generate(&lifted, &key, &OpenClC::new()).source,
         generate(&built, &key, &OpenClC::new()).source
     );
+}
+
+// ROADMAP E18 (3): N-D `get_global_id(d)` flat indexes and the 2-D row loop, through this
+// crate's front end. Near-misses must be refused, not lifted as the wrong operation.
+
+const ND_HEAD: &str = "__kernel void k(__global const float* in0, __global const float* in1, __global float* out, long w) {";
+
+fn nd(body: &str) -> String {
+    format!("{ND_HEAD} {body} }}")
+}
+
+#[test]
+fn an_n_d_global_id_store_lifts_as_the_elementwise_op() {
+    let op = lift(&nd(
+        "long x = get_global_id(0); long y = get_global_id(1); out[y * w + x] = in0[y * w + x] + in1[y * w + x];",
+    ))
+    .unwrap();
+    assert_eq!(op.body, (input(0) + input(1)).0);
+}
+
+#[test]
+fn a_read_flattened_differently_from_the_store_is_refused() {
+    let r = lift(&nd(
+        "long x = get_global_id(0); long y = get_global_id(1); out[y * w + x] = in0[y * w + x] + in1[x * w + y];",
+    ));
+    assert!(r.is_err(), "in1 is read transposed: {r:?}");
+}
+
+const ROW_HEAD: &str = "__kernel void k(__global const float* in0, __global float* out, long n) {";
+
+fn row(body: &str) -> String {
+    format!("{ROW_HEAD} {body} }}")
+}
+
+#[test]
+fn a_2d_row_loop_lifts_as_a_last_axis_reduction() {
+    let op = lift_reduction(
+        &OPENCL_C,
+        &row("long r = get_global_id(0); float acc = 0.0f; for (long c = 0; c < n; ++c) { acc += in0[r * n + c]; } out[r] = acc;"),
+        "k",
+        F32,
+    )
+    .unwrap()
+    .op;
+    assert_eq!(op, OpDef::reduction("k", 1, F32, input(0), ReduceOp::Sum));
+}
+
+#[test]
+fn row_loops_that_do_not_enumerate_the_rows_are_refused() {
+    for (why, body) in [
+        (
+            "every row would sum the same row",
+            "long r = get_global_id(0); float acc = 0.0f; for (long c = 0; c < n; ++c) { acc += in0[c]; } out[r] = acc;",
+        ),
+        (
+            "the row id is not the first global id",
+            "long r = get_global_id(1); float acc = 0.0f; for (long c = 0; c < n; ++c) { acc += in0[r * n + c]; } out[r] = acc;",
+        ),
+    ] {
+        let r = lift_reduction(&OPENCL_C, &row(body), "k", F32);
+        assert!(r.is_err(), "{why}: {r:?}");
+    }
 }
