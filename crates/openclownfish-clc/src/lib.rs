@@ -147,6 +147,31 @@ const I64: Ty = Ty {
     store: "long",
     half: None,
 };
+// u32 and u64 wrap through the same unsigned type, shift right logically (the
+// type is unsigned, so C's `>>` is), and divide with only the zero guard: an
+// unsigned quotient has no `MIN / -1` case.
+const U32: Ty = Ty {
+    c: "uint",
+    suffix: "",
+    tag: "u32",
+    int: true,
+    uns: "uint",
+    lo: "0u",
+    hi: "4294967295u",
+    store: "uint",
+    half: None,
+};
+const U64: Ty = Ty {
+    c: "ulong",
+    suffix: "UL",
+    tag: "u64",
+    int: true,
+    uns: "ulong",
+    lo: "0UL",
+    hi: "18446744073709551615UL",
+    store: "ulong",
+    half: None,
+};
 // The narrow integers compute `+ - *` and `<<` in `uint` (C promotes them to
 // `int`, where a 16-bit product can overflow), and convert back, which wraps at
 // the element width. Shifts promote to `int` and take the count modulo 32, the
@@ -233,6 +258,8 @@ fn int_ty(dtype: ElementKind) -> Option<Ty> {
         ElementKind::U16 => U16,
         ElementKind::I32 => I32,
         ElementKind::I64 => I64,
+        ElementKind::U32 => U32,
+        ElementKind::U64 => U64,
         _ => return None,
     })
 }
@@ -334,12 +361,16 @@ fn int_expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
                 )));
             }
             let bits = match t.tag {
-                "i8" => 8,
-                "i16" => 16,
-                "i32" => 32,
+                "i8" | "u8" => 8,
+                "i16" | "u16" => 16,
+                "i32" | "u32" => 32,
                 _ => 64,
             };
-            let (lo, hi) = (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
+            let (lo, hi) = if t.tag.starts_with('u') {
+                (0, (1i128 << bits) - 1)
+            } else {
+                (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+            };
             let v = i128::from(*v);
             if v < lo || v > hi {
                 return Err(refuse(format!("integer constant {v} outside {}", t.tag)));
@@ -401,6 +432,11 @@ fn int_div_helper(t: Ty, body: &str, post: &str) -> String {
         return String::new();
     }
     let (c, lo) = (t.c, t.lo);
+    if t.tag.starts_with('u') {
+        return format!(
+            "inline {c} ocl_idiv({c} a, {c} b) {{\n    return b == 0 ? a : a / b;\n}}\n"
+        );
+    }
     format!(
         "inline {c} ocl_idiv({c} a, {c} b) {{\n    return (b == 0 || (a == {lo} && b == ({c})-1)) ? a : a / b;\n}}\n"
     )
@@ -1456,8 +1492,8 @@ impl Backend for OpenClC {
 
     /// `Div` is guarded (`ocl_idiv`), the shifts mask their count (OpenCL C 6.5.10), and
     /// `ConstInt`, the comparisons and `Select` have integer spellings, all by the total
-    /// rule. Only `I32` and `I64` are served (no unsigned dtype), so the rule is checked
-    /// there.
+    /// rule. Every integer dtype served here is covered, signed and unsigned, and the rule is
+    /// checked at each.
     fn total_integer_ops(&self) -> bool {
         true
     }
