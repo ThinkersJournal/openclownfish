@@ -288,8 +288,9 @@ fn input_leaf(i: u8, cx: Cx<'_>) -> String {
 /// compiler. A shift count is taken unsigned and modulo the bit width: OpenCL C
 /// masks it (6.5.10), which is the kernel-layer rule of unpopped 0.38.3
 /// (`docs/int-div-shift-semantics.md`), so out-of-range and negative counts need
-/// no guard. Integer division stays refused until the plan gate admits it (E16);
-/// OpenCL C leaves `b == 0` and `MIN / -1` unspecified, so it will need a guard.
+/// no guard. Integer `Div` is total (`ocl_idiv`): OpenCL C leaves `b == 0` and
+/// `MIN / -1` unspecified (6.5.1), so the helper guards both. Integer `Rem` is the
+/// `Select` composition over it, which Unpopped plans for an opted-in backend.
 fn int_expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
     let (t, n_inputs) = (cx.t, cx.n_inputs);
     let wrap = |a: &ScalarExpr, op: &str, b: &ScalarExpr| -> Result<String, LowerError> {
@@ -321,6 +322,68 @@ fn int_expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
         ScalarExpr::Binary(BinaryOp::Shl, a, b) => wrap(a, "<<", b)?,
         // Arithmetic on signed types, as the IR contract states.
         ScalarExpr::Binary(BinaryOp::Shr, a, b) => plain(a, ">>", b)?,
+        // The total rule (`docs/int-div-shift-semantics.md`): a zero divisor gives the
+        // dividend and `MIN / -1` gives `MIN`, through a helper that evaluates each
+        // operand once.
+        ScalarExpr::Div(a, b) => format!("ocl_idiv({}, {})", int_expr(a, cx)?, int_expr(b, cx)?),
+        ScalarExpr::ConstInt(v, kind) => {
+            if int_ty(*kind).map(|k| k.tag) != Some(t.tag) {
+                return Err(refuse(format!(
+                    "an integer constant of {kind:?} in a {} kernel",
+                    t.tag
+                )));
+            }
+            let bits = match t.tag {
+                "i8" => 8,
+                "i16" => 16,
+                "i32" => 32,
+                _ => 64,
+            };
+            let (lo, hi) = (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
+            let v = i128::from(*v);
+            if v < lo || v > hi {
+                return Err(refuse(format!("integer constant {v} outside {}", t.tag)));
+            }
+            // MIN has no positive literal, so it is spelled as `-(MAX) - 1`.
+            if v == lo {
+                t.lo.to_owned()
+            } else {
+                format!("(({}){v})", t.c)
+            }
+        }
+        // A comparison is 1 or 0 in the element type, and `Select` tests `!= 0`.
+        ScalarExpr::Binary(
+            op @ (BinaryOp::CmpEq
+            | BinaryOp::CmpNe
+            | BinaryOp::CmpLt
+            | BinaryOp::CmpLe
+            | BinaryOp::CmpGt
+            | BinaryOp::CmpGe),
+            a,
+            b,
+        ) => {
+            let sym = match op {
+                BinaryOp::CmpEq => "==",
+                BinaryOp::CmpNe => "!=",
+                BinaryOp::CmpLt => "<",
+                BinaryOp::CmpLe => "<=",
+                BinaryOp::CmpGt => ">",
+                _ => ">=",
+            };
+            format!(
+                "(({} {sym} {}) ? ({})1 : ({})0)",
+                int_expr(a, cx)?,
+                int_expr(b, cx)?,
+                t.c,
+                t.c
+            )
+        }
+        ScalarExpr::Select(c, a, b) => format!(
+            "(({} != 0) ? {} : {})",
+            int_expr(c, cx)?,
+            int_expr(a, cx)?,
+            int_expr(b, cx)?
+        ),
         other => {
             return Err(refuse(format!(
                 "expression node not supported on {}: {other:?}",
@@ -328,6 +391,19 @@ fn int_expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
             )));
         }
     })
+}
+
+/// The integer division helper, when the source uses it: a zero divisor gives the
+/// dividend and a signed `MIN / -1` gives `MIN`, the total rule of
+/// `docs/int-div-shift-semantics.md`. Empty when `body` and `post` do not call it.
+fn int_div_helper(t: Ty, body: &str, post: &str) -> String {
+    if !t.int || !(body.contains("ocl_idiv(") || post.contains("ocl_idiv(")) {
+        return String::new();
+    }
+    let (c, lo) = (t.c, t.lo);
+    format!(
+        "inline {c} ocl_idiv({c} a, {c} b) {{\n    return (b == 0 || (a == {lo} && b == ({c})-1)) ? a : a / b;\n}}\n"
+    )
 }
 
 /// Spell `e` as a fully parenthesised OpenCL C expression of type `t`.
@@ -835,6 +911,12 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
     if t.int && matches!(op, ReduceOp::Mean) {
         return Err(refuse("integer Mean"));
     }
+    if !matches!(
+        op,
+        ReduceOp::Sum | ReduceOp::Mean | ReduceOp::Prod | ReduceOp::Max | ReduceOp::Min
+    ) {
+        return Err(refuse(format!("the {op:?} reduction")));
+    }
     // Unpopped's oracle scopes integer reductions to i32 and i64 (the referee
     // panics on a narrower dtype), so a narrow one would have nothing to be
     // checked against: decline it by name.
@@ -995,6 +1077,9 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
                 ),
             )
         }
+
+        // reduction_facts declines every other op by name before this point.
+        _ => unreachable!("reduction_facts admits only Sum, Mean, Prod, Max, Min"),
     };
     s.push_str(&format!("    {ty} acc = {init};\n"));
     if matches!(rc.op, ReduceOp::Max | ReduceOp::Min) {
@@ -1378,6 +1463,14 @@ impl Backend for OpenClC {
         "openclownfish"
     }
 
+    /// `Div` is guarded (`ocl_idiv`), the shifts mask their count (OpenCL C 6.5.10), and
+    /// `ConstInt`, the comparisons and `Select` have integer spellings, all by the total
+    /// rule. Only `I32` and `I64` are served (no unsigned dtype), so the rule is checked
+    /// there.
+    fn total_integer_ops(&self) -> bool {
+        true
+    }
+
     fn supports_dtype(&self, dtype: ElementKind, _target: TargetId) -> DtypeSupport {
         match dtype {
             ElementKind::F32 => DtypeSupport::Supported,
@@ -1455,6 +1548,11 @@ impl Backend for OpenClC {
                 s.push_str(&text.replace("float", t.c));
                 helpers = true;
             }
+        }
+        let idiv = int_div_helper(t, &body, &post);
+        if !idiv.is_empty() {
+            s.push_str(&idiv);
+            helpers = true;
         }
         if helpers {
             s.push('\n');
@@ -1631,6 +1729,11 @@ impl Backend for OpenClC {
         }
         if let Some(h) = t.half.filter(|h| body.contains(h.prefix())) {
             s.push_str(&half_helpers(h));
+            helpers = true;
+        }
+        let idiv = int_div_helper(t, &body, &post);
+        if !idiv.is_empty() {
+            s.push_str(&idiv);
             helpers = true;
         }
         if helpers {
