@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.42
+
+- Emitter: bf16 and f16 serial reductions (`Sum`, `Prod`, `Max`, `Min`, `Mean`) and scans (forward, reverse, inclusive, exclusive). The fold runs in `float` over the decoded values and each stored result is rounded once to the format, to nearest even, which is what the oracle's `f64` fold plus one encode gives on exactly representable data. A fused post-expression over a half is declined by name (only the plain fold is checked), and the block-scan and block-reduce variants decline halves.
+- Tests: `device_agrees_half_reduce.rs` runs 234 reduction and scan cases on 3 devices against the oracle (`Mean` within one step of the format, the rest bit for bit). Doubling the stored reduction and the stored scan value are each caught. The old by-name refusal of half reductions is replaced by a check that they lower and that a fused post is declined.
+
 ## 0.0.41
 
 - Emitter: u32 and u64 kernels (elementwise, serial reductions and scans). Wrapping `+ - *` and `<<` go through the same unsigned type, `>>` is logical, a shift count is masked by OpenCL C, and integer `Div` is guarded by the zero-divisor rule only (no `MIN / -1` case); integer constants at the unsigned types check `0..2^bits-1` (u8 and u16 constants used the 64-bit signed range before).

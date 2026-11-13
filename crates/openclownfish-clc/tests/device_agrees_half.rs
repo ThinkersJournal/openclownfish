@@ -20,7 +20,7 @@
 use openclownfish::{Context, Program, Runtime};
 use openclownfish_clc::OpenClC;
 use unpopped::backend::Backend;
-use unpopped::ir::{BinaryOp, Expr, OpDef, ReduceOp, UnaryOp, input, konst};
+use unpopped::ir::{Access, BinaryOp, Expr, OpDef, ReduceOp, UnaryOp, input, konst, reduced};
 use unpopped::oracle::{TypedBuffer, evaluate};
 use unpopped::{build_plan, generate};
 use unpopped_vocab::{ArchSku, ElementKind, OpCategory, OperandDesc, structure_key};
@@ -449,16 +449,22 @@ fn half_plans_the_emitter_cannot_check_are_declined_by_name() {
         // Control: an exact one lowers.
         let op = OpDef::elementwise("c", 1, &[kind], input(0) + konst(0.5));
         assert!(backend.lower(&build_plan(&op, &key)).is_ok());
-        // Reductions are not served yet.
+        // A plain reduction lowers (device_agrees_half_reduce.rs checks it); a fused
+        // post-expression over a half is declined by name.
         let a = OperandDesc::new(2, &[4, 6], &[6, 1], kind, 256);
         let o = OperandDesc::new(1, &[4], &[1], kind, 256);
         let key = structure_key(OpCategory::Reduction, &[a, o], ArchSku::Sm89);
         let op = OpDef::reduction("r", 1, &[kind], input(0), ReduceOp::Sum);
+        assert!(backend.lower(&build_plan(&op, &key)).is_ok());
+        let mut op = OpDef::reduction("r", 1, &[kind], input(0), ReduceOp::Sum);
+        if let Access::Reduction { post, .. } = &mut op.access {
+            *post = (reduced(0) * konst(2.0)).0;
+        }
         let err = backend
             .lower(&build_plan(&op, &key))
-            .expect_err("a half reduction lowered");
+            .expect_err("a fused post over a half lowered");
         assert!(
-            format!("{err:?}").contains(&format!("{tag} reductions")),
+            format!("{err:?}").contains(&format!("fused post-expression over {tag}")),
             "{err:?}"
         );
     }
