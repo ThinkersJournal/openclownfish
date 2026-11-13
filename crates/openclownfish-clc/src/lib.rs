@@ -949,9 +949,23 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
     }
     if !matches!(
         op,
-        ReduceOp::Sum | ReduceOp::Mean | ReduceOp::Prod | ReduceOp::Max | ReduceOp::Min
+        ReduceOp::Sum
+            | ReduceOp::Mean
+            | ReduceOp::Prod
+            | ReduceOp::Max
+            | ReduceOp::Min
+            | ReduceOp::MaxNum
+            | ReduceOp::MinNum
+            | ReduceOp::And
+            | ReduceOp::Or
+            | ReduceOp::Xor
     ) {
         return Err(refuse(format!("the {op:?} reduction")));
+    }
+    // The oracle seeds a bit fold with its first element and declines a float one at the plan
+    // gate; this emitter refuses it too, by name.
+    if !t.int && matches!(op, ReduceOp::And | ReduceOp::Or | ReduceOp::Xor) {
+        return Err(refuse(format!("the {op:?} reduction over {}", t.tag)));
     }
     let rank = usize::from(plan.key.rank);
     if rank == 0 {
@@ -1098,9 +1112,24 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
                 format!("acc *= {body};")
             },
         ),
-        ReduceOp::Max | ReduceOp::Min => {
-            let max = matches!(rc.op, ReduceOp::Max);
+        ReduceOp::And | ReduceOp::Or | ReduceOp::Xor => {
+            let c = match rc.op {
+                ReduceOp::And => "&",
+                ReduceOp::Or => "|",
+                _ => "^",
+            };
+            // Seeded by the first element, as the oracle does (an empty extent leaves 0).
+            (
+                format!("({ty})0"),
+                format!("{{ {ty} e = {body}; acc = has ? ({ty})(acc {c} e) : e; has = 1; }}"),
+            )
+        }
+        ReduceOp::Max | ReduceOp::Min | ReduceOp::MaxNum | ReduceOp::MinNum => {
+            let max = matches!(rc.op, ReduceOp::Max | ReduceOp::MaxNum);
             let cmp = if max { ">" } else { "<" };
+            // `MaxNum` and `MinNum` skip a NaN element and replace a NaN accumulator; an integer
+            // has no NaN, so they coincide with `Max` and `Min` there.
+            let skip_nan = !t.int && matches!(rc.op, ReduceOp::MaxNum | ReduceOp::MinNum);
             // An empty reduced extent leaves the monoid identity (dtype extreme
             // for integers, 0 for floats), as Baracuda's emitter does.
             let seed = match (t.int, max) {
@@ -1108,19 +1137,31 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
                 (true, false) => t.hi.to_owned(),
                 _ => format!("({ty})0"),
             };
+            let keep = if skip_nan {
+                format!("(acc != acc || (e == e && e {cmp} acc))")
+            } else {
+                format!("(e != e || e {cmp} acc)")
+            };
             (
                 seed,
-                format!(
-                    "{{ {ty} e = {body}; acc = has ? ((e != e || e {cmp} acc) ? e : acc) : e; has = 1; }}"
-                ),
+                format!("{{ {ty} e = {body}; acc = has ? ({keep} ? e : acc) : e; has = 1; }}"),
             )
         }
 
         // reduction_facts declines every other op by name before this point.
-        _ => unreachable!("reduction_facts admits only Sum, Mean, Prod, Max, Min"),
+        _ => unreachable!("reduction_facts admits only the ops above"),
     };
     s.push_str(&format!("    {ty} acc = {init};\n"));
-    if matches!(rc.op, ReduceOp::Max | ReduceOp::Min) {
+    if matches!(
+        rc.op,
+        ReduceOp::Max
+            | ReduceOp::Min
+            | ReduceOp::MaxNum
+            | ReduceOp::MinNum
+            | ReduceOp::And
+            | ReduceOp::Or
+            | ReduceOp::Xor
+    ) {
         s.push_str("    int has = 0;\n");
     }
     for &r in &rc.reduced {
@@ -1563,6 +1604,13 @@ impl Backend for OpenClC {
             let Ok(r) = reduction_facts(plan, t) else {
                 return Ok(Vec::new());
             };
+            // The block variant is written for the ops it was checked on.
+            if !matches!(
+                r.op,
+                ReduceOp::Sum | ReduceOp::Mean | ReduceOp::Prod | ReduceOp::Max | ReduceOp::Min
+            ) {
+                return Ok(Vec::new());
+            }
             variant = "blockreduce";
             op = r.op;
             body = expr(plan.body, cx)?;

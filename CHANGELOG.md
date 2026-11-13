@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.43
+
+- Emitter: serial `And`, `Or` and `Xor` reductions over every integer dtype (seeded by the first element, as the oracle does; a float bit fold is declined by name), and `MaxNum` and `MinNum` over floats, halves and integers (a NaN element is skipped and a NaN accumulator replaced, so a row of only NaN stays NaN, where `Max` and `Min` keep a NaN once seen). The block-reduce variant stays on Sum, Mean, Prod, Max and Min. `ArgMax` and `ArgMin` are still declined by name.
+- Tests: `device_agrees_reduce_ops.rs` runs 840 reduction cases on 3 devices against the oracle (eight integer dtypes, f32, f64, bf16, f16, five axis shapes), with a control that the data separates the `Max` and `MaxNum` NaN rules. Disabling the NaN skip and turning the `And` fold into an `Or` each fail it.
+
 ## 0.0.42
 
 - Emitter: bf16 and f16 serial reductions (`Sum`, `Prod`, `Max`, `Min`, `Mean`) and scans (forward, reverse, inclusive, exclusive). The fold runs in `float` over the decoded values and each stored result is rounded once to the format, to nearest even, which is what the oracle's `f64` fold plus one encode gives on exactly representable data. A fused post-expression over a half is declined by name (only the plain fold is checked), and the block-scan and block-reduce variants decline halves.
