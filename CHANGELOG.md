@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.35
+
+- Deps: unpopped and unpopped-vocab 0.43.2 (from 0.40.0). `ReduceOp` gained `And`, `Or`, `Xor`, `MaxNum`, `MinNum`, `ArgMax` and `ArgMin`; the emitter declines each by name in `reduction_facts` (an unreachable arm backs the match), so no emitted kernel changes.
+- Emitter: integer `Div`, and the integer `Rem` composition over it, by the total rule of Unpopped `docs/int-div-shift-semantics.md` (ROADMAP E16): a zero divisor gives the dividend and `MIN / -1` gives `MIN`, through an `ocl_idiv` helper that evaluates each operand once (OpenCL C 6.5.1 leaves both unspecified). Integer comparisons (1 or 0 in the element type), `Select` and `ConstInt` are spelled too, so the `Rem` composition plans. `OpenClC` now returns `true` from `Backend::total_integer_ops`, which opens Unpopped's plan gate for it at I32 and I64. U32 and U64 stay refused as unsupported dtypes (the emitter has no unsigned type), and 8- and 16-bit `Div` is not admitted by the gate.
+- Tests: `device_agrees_int_div.rs` runs `Div`, `Rem`, comparison with `Select`, and `ConstInt` (including `MIN`) at I32 and I64 on all 3 laptop devices (NVIDIA RTX 4070 Laptop, AMD gfx1036, Intel CPU; Windows booted): 60 case runs, each against a host function written from the document and against Unpopped's plan oracle. The inputs hold every pairing of `MIN`, `MAX`, `-1`, `0`, `1` and large values. Removing the guard from `ocl_idiv` makes the test fail on the first device.
+- Not covered: the Intel CPU runtime issue in `docs/device-reports.md` is unchanged; rig results are UNVERIFIED (the PM has no read of the rig's boot state).
+
 ## 0.0.34
 
 - Emitter: f16 elementwise kernels, contiguous and strided (X2 PR3), the same way as bf16: stored as its 16-bit pattern in a `ushort`, computed in `float`, through an integer decode/encode in the kernel. It needs no `cl_khr_fp16`, so it runs on NVIDIA too, which has no such extension; native `half` arithmetic was not used because it would round after every operation where the oracle rounds once at the store. A store rounds to nearest even; an f16 NaN created by an operation is the canonical quiet NaN with its sign (the oracle's rule); `Neg`, `Abs`, `Max`, `Min` and `Select` move bits as for bf16. A constant must be exactly representable in f16.

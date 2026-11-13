@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "openclownfish"
-version = "0.0.34"
+version = "0.0.35"
 dependencies = [
  "openclownfish-sys",
  "thiserror",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "openclownfish-clc"
-version = "0.0.34"
+version = "0.0.35"
 dependencies = [
  "openclownfish",
  "tree-sitter",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "openclownfish-sys"
-version = "0.0.34"
+version = "0.0.35"
 dependencies = [
  "libloading",
  "opencl-sys",
@@ -342,9 +342,9 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "unpopped"
-version = "0.40.0"
+version = "0.43.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "775f2ad36490f08abab57be9bd2d0c149d43388429cc6307593ff431feb2f483"
+checksum = "e23c70385388d37756a17fa4bc6f66bd4f26e2551fcb7e07c9b150e1b5d5a8ac"
 dependencies = [
  "libm",
  "serde",
@@ -355,9 +355,9 @@ dependencies = [
 
 [[package]]
 name = "unpopped-vocab"
-version = "0.40.0"
+version = "0.43.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "695913162a49b77355f3e448898b30d58adc5067b3d65f22445c34e7396e0964"
+checksum = "f3e08887b4d3ef4b9e1fb5f1adc26871f6b1a9bcaec9e65972649e5f8e826ad5"
 dependencies = [
  "float8",
  "half",
