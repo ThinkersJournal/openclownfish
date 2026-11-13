@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.36
+
+- Tests: the bf16 and f16 device differential (`device_agrees_half.rs`) now covers `FmaxIeee`, `FminIeee` and `Pow`, which were emitted but unchecked since 0.0.33 and 0.0.34. 288 case runs agree on all 3 laptop devices (NVIDIA RTX 4070 Laptop, AMD gfx1036, Intel CPU; Windows booted), 36 of them new. `Pow` is held to one step of the format, as the other float-computed operations are. No emitter change.
+- The first run found one disagreement, and it is not a kernel defect: for `FmaxIeee(-0, +0)` the device returned `-0` and the oracle `+0`. IEEE 754 maxNum/minNum, OpenCL `fmax` and Rust's `f64::max` leave the sign of a zero tie unspecified, and the f32 differential already treats it as open. The half test now does the same, but only when both inputs are zero (`Check::ZeroTie`); every other result is byte for byte, except that two NaNs agree.
+- Removing the NaN handling from `ocl_fmax` (so a NaN operand propagates) makes the test fail on a NaN input.
+
 ## 0.0.35
 
 - Deps: unpopped and unpopped-vocab 0.43.2 (from 0.40.0). `ReduceOp` gained `And`, `Or`, `Xor`, `MaxNum`, `MinNum`, `ArgMax` and `ArgMin`; the emitter declines each by name in `reduction_facts` (an unreachable arm backs the match), so no emitted kernel changes.
