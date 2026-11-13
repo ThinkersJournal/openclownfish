@@ -4,6 +4,11 @@
 
 - Docs: ROADMAP row PS1 records the patent sweep for async scheduling (PM notice, board 431 hit 22): this crate lowers no `AsyncWait`, `CopyAsync` or `AsyncCommit`, and the parser refuses OpenCL's `async_work_group_copy` and `wait_group_events` by name. The same row covers `Stmt::Collective` (barrier aggregation, board 431 hit 23): no lowering here, and the parser refuses `work_group_` and `sub_group_`. No code change.
 
+## 0.0.38
+
+- Emitter: i8, u8, i16 and u16 `Sum`, `Prod`, `Max` and `Min` reductions now lower (ROADMAP E19). Unpopped's oracle covers them from 0.40.16, so the by-name decline is gone; integer `Mean` stays declined by name.
+- Tests: `device_agrees_narrow_reduce.rs` runs 240 narrow reductions on 3 devices bit for bit against the oracle (wrapping included). Turning the integer `Sum`'s `+` into `-` makes it fail.
+
 ## 0.0.37
 
 - Tests: ROADMAP E18 idioms proved through this crate's `OPENCL_C` front end. A `Mean` post, exclusive, reverse and reverse-exclusive scans lift, emit and agree bit for bit with the source kernel on every device (11 cases per device); the N-D `get_global_id` elementwise form and the 2-D row loop lift, and near-miss spellings are refused.
