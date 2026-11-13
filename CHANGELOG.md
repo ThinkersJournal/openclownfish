@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.37
+
+- Tests: ROADMAP E18 idioms proved through this crate's `OPENCL_C` front end. A `Mean` post, exclusive, reverse and reverse-exclusive scans lift, emit and agree bit for bit with the source kernel on every device (11 cases per device); the N-D `get_global_id` elementwise form and the 2-D row loop lift, and near-miss spellings are refused.
+- Flipping `exclusive` or `reverse` in the serial scan emitter makes the test fail.
+
 ## 0.0.36
 
 - Tests: the bf16 and f16 device differential (`device_agrees_half.rs`) now covers `FmaxIeee`, `FminIeee` and `Pow`, which were emitted but unchecked since 0.0.33 and 0.0.34. 288 case runs agree on all 3 laptop devices (NVIDIA RTX 4070 Laptop, AMD gfx1036, Intel CPU; Windows booted), 36 of them new. `Pow` is held to one step of the format, as the other float-computed operations are. No emitter change.
