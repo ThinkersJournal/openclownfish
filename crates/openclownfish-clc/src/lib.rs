@@ -917,15 +917,6 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
     ) {
         return Err(refuse(format!("the {op:?} reduction")));
     }
-    // Unpopped's oracle scopes integer reductions to i32 and i64 (the referee
-    // panics on a narrower dtype), so a narrow one would have nothing to be
-    // checked against: decline it by name.
-    if t.int && !matches!(t.tag, "i32" | "i64") {
-        return Err(refuse(format!(
-            "{} reductions (Unpopped scopes integer reductions to i32 and i64)",
-            t.tag
-        )));
-    }
     let rank = usize::from(plan.key.rank);
     if rank == 0 {
         return Err(refuse("rank-0 reductions"));
