@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.40
+
+- Deps: unpopped and unpopped-vocab 0.45.12 (from 0.43.2), per the PM's repin notice. Unpopped now declines the four patent-flagged statements (`AsyncWait`, `CopyAsync`, `AsyncCommit`, `Collective`) by name at its own plan gate (board 434 C); this emitter lowers none of them (ROADMAP PS1).
+
 ## 0.0.39
 
 - Docs: ROADMAP row PS1 records the patent sweep for async scheduling (PM notice, board 431 hit 22): this crate lowers no `AsyncWait`, `CopyAsync` or `AsyncCommit`, and the parser refuses OpenCL's `async_work_group_copy` and `wait_group_events` by name. The same row covers `Stmt::Collective` (barrier aggregation, board 431 hit 23): no lowering here, and the parser refuses `work_group_` and `sub_group_`. No code change.
