@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.41
+
+- Emitter: u32 and u64 kernels (elementwise, serial reductions and scans). Wrapping `+ - *` and `<<` go through the same unsigned type, `>>` is logical, a shift count is masked by OpenCL C, and integer `Div` is guarded by the zero-divisor rule only (no `MIN / -1` case); integer constants at the unsigned types check `0..2^bits-1` (u8 and u16 constants used the 64-bit signed range before).
+- Tests: `device_agrees_unsigned.rs` runs 108 elementwise cases (the oracle, a host formula and the device all agree) and 48 reduction and scan cases on 3 devices. A zero-divisor mutant and an integer `Prod` mutant each fail it. The old by-name refusal of unsigned division is replaced by a refusal of an unserved dtype (`F32Strict`).
+
 ## 0.0.40
 
 - Deps: unpopped and unpopped-vocab 0.45.12 (from 0.43.2), per the PM's repin notice. Unpopped now declines the four patent-flagged statements (`AsyncWait`, `CopyAsync`, `AsyncCommit`, `Collective`) by name at its own plan gate (board 434 C); this emitter lowers none of them (ROADMAP PS1).

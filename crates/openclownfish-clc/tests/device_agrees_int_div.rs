@@ -296,21 +296,22 @@ fn the_pools_contain_the_boundary_pairs() {
     assert!(a.iter().zip(&b).any(|(p, q)| *p == i64::MIN && *q == -1));
 }
 
-/// A plan the gate admits for this backend but whose dtype it does not serve is refused, not
-/// approximated: there is no unsigned dtype here.
+/// A dtype this backend does not serve is refused, not approximated. u32 and u64 are served
+/// now (`device_agrees_unsigned.rs` checks them against the oracle), so the control is the
+/// strict-f32 dtype, which has no spelling here.
 #[test]
-fn unsigned_division_is_refused_by_name() {
+fn an_unserved_dtype_is_refused_by_name() {
     let backend = OpenClC::new();
-    let desc = OperandDesc::new(1, &[8], &[1], ElementKind::U32, 256);
+    let desc = OperandDesc::new(1, &[8], &[1], ElementKind::F32Strict, 256);
     let key = structure_key(
         OpCategory::BinaryElementwise,
         &[desc, desc, desc],
         ArchSku::Sm89,
     );
-    let op = OpDef::elementwise("udiv", 2, &[ElementKind::U32], input(0) / input(1));
+    let op = OpDef::elementwise("sadd", 2, &[ElementKind::F32Strict], input(0) + input(1));
     let r = std::panic::catch_unwind(|| try_generate(&op, &key, &backend));
     assert!(
         matches!(r, Err(_) | Ok(Err(_))),
-        "a U32 kernel was produced"
+        "an F32Strict kernel was produced"
     );
 }
