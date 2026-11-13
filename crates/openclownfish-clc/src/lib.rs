@@ -997,6 +997,17 @@ fn emit_reduction_params(s: &mut String, rank: usize, rc: &ReduceCx) {
 
 /// The post-expression spelled for the element type, with `red` the finalized fold.
 fn reduction_post(rc: &ReduceCx, cx: Cx<'_>) -> Result<String, LowerError> {
+    if let Some(h) = cx.t.half {
+        // The fold is a float; only the plain store is checked against the oracle, so a fused
+        // post-expression over a half is declined by name.
+        if !matches!(rc.post, ScalarExpr::Reduced(0)) {
+            return Err(refuse(format!(
+                "a fused post-expression over {} (only the plain fold is served)",
+                cx.t.tag
+            )));
+        }
+        return Ok(format!("{}_b(red)", h.prefix()));
+    }
     expr(
         &rc.post,
         Cx {
@@ -1389,6 +1400,10 @@ fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
     );
     s.push_str("    long base = row * k;\n");
     s.push_str(&format!("    {ty} acc = {ident};\n"));
+    let store = |x: &str| match t.half {
+        Some(h) => format!("{}_b({x})", h.prefix()),
+        None => x.to_owned(),
+    };
     let fold = match sc.op {
         ReduceOp::Sum | ReduceOp::Prod => {
             let c = if matches!(sc.op, ReduceOp::Sum) {
@@ -1413,6 +1428,7 @@ fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
     } else {
         "acc".to_owned()
     };
+    let (first, acc_out) = (store(&first), store("acc"));
     s.push_str("    for (long jj = 0; jj < k; ++jj) {\n");
     let j = if sc.reverse { "k - 1 - jj" } else { "jj" };
     s.push_str(&format!("        long i = base + ({j});\n"));
@@ -1425,7 +1441,7 @@ fn emit_scan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
     } else {
         s.push_str(&format!(
             "        {fold}
-        out[i] = acc;\n"
+        out[i] = {acc_out};\n"
         ));
     }
     s.push_str(
@@ -1665,17 +1681,6 @@ impl Backend for OpenClC {
         // `Vectorized` is a width hint for backends that vectorise; this kernel
         // is element-counted (`effective_count_width` stays 1), which is correct
         // for any contiguous elementwise plan.
-        if t.half.is_some()
-            && !matches!(
-                plan.schedule,
-                Schedule::Scalar | Schedule::Vectorized { .. } | Schedule::Strided
-            )
-        {
-            return Err(refuse(format!(
-                "{} reductions and scans (elementwise only so far)",
-                t.tag
-            )));
-        }
         let mut reduction = None;
         let mut scan = None;
         let strided = match plan.schedule {
@@ -1705,7 +1710,7 @@ impl Backend for OpenClC {
             fold: reduction.is_some(),
         };
         // A scan folds its per-element pre-map; the epilogue is the identity.
-        let body = if t.half.is_some() {
+        let body = if t.half.is_some() && scan.is_none() && reduction.is_none() {
             half_value(plan.body, cx)?.bits()
         } else {
             expr(scan.as_ref().map_or(plan.body, |(_, pre)| pre), cx)?
