@@ -2,7 +2,7 @@
 
 ## 0.0.39
 
-- Docs: ROADMAP row PS1 records the patent sweep for async scheduling (PM notice, board 431 hit 22): this crate lowers no `AsyncWait`, `CopyAsync` or `AsyncCommit`, and the parser refuses OpenCL's `async_work_group_copy` and `wait_group_events` by name. No code change.
+- Docs: ROADMAP row PS1 records the patent sweep for async scheduling (PM notice, board 431 hit 22): this crate lowers no `AsyncWait`, `CopyAsync` or `AsyncCommit`, and the parser refuses OpenCL's `async_work_group_copy` and `wait_group_events` by name. The same row covers `Stmt::Collective` (barrier aggregation, board 431 hit 23): no lowering here, and the parser refuses `work_group_` and `sub_group_`. No code change.
 
 ## 0.0.37
 
