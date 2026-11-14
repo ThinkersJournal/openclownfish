@@ -314,7 +314,7 @@ fn the_nan_rules_of_max_and_maxnum_really_differ_on_this_data() {
 }
 
 #[test]
-fn a_float_bit_fold_and_the_arg_reductions_are_declined_by_name() {
+fn a_float_bit_fold_is_declined_by_name() {
     let backend = OpenClC::new();
     let a = OperandDesc::new(2, &[4, 6], &[6, 1], ElementKind::F32, 256);
     let o = OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256);
@@ -322,10 +322,11 @@ fn a_float_bit_fold_and_the_arg_reductions_are_declined_by_name() {
     // Control: the same shape at Max lowers.
     let ok = OpDef::reduction("r", 1, &[ElementKind::F32], input(0), ReduceOp::Max);
     assert!(backend.lower(&build_plan_for(&ok, &key, &backend)).is_ok());
-    for op in [ReduceOp::And, ReduceOp::ArgMax, ReduceOp::ArgMin] {
-        let opdef = OpDef::reduction("r", 1, &[ElementKind::F32], input(0), op);
-        // The plan gate may itself decline these at F32; if it plans, the emitter must refuse.
-        let r = std::panic::catch_unwind(|| try_generate(&opdef, &key, &backend));
-        assert!(matches!(r, Err(_) | Ok(Err(_))), "{op:?} produced a kernel");
-    }
+    let opdef = OpDef::reduction("r", 1, &[ElementKind::F32], input(0), ReduceOp::And);
+    // The plan gate may itself decline it at F32; if it plans, the emitter must refuse.
+    let r = std::panic::catch_unwind(|| try_generate(&opdef, &key, &backend));
+    assert!(
+        matches!(r, Err(_) | Ok(Err(_))),
+        "a float And produced a kernel"
+    );
 }

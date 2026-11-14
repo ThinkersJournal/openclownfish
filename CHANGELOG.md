@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.44
+
+- Emitter: serial `ArgMax` and `ArgMin` over every dtype served (floats, halves and all eight integers), giving an `I64` index in the row-major order of the reduced axes. This is the first kernel whose output dtype differs from the compute dtype: `lower` now admits that only for an arg reduction with `out_dtype = Some(I64)`, which the plan gate requires. NaN orders as the greatest value, ties keep the lower index, and a row of only NaN gives 0 (KISS-OPS-6.11-0007, the oracle's `arg_fold`). The block-reduce variant still declines them.
+- Tests: `device_agrees_arg_reduce.rs` runs 198 cases on 3 devices (11 dtypes, both ops, three axis shapes) where the kernel, the oracle and a host fold written from the rule all agree, on a corpus with ties, NaNs, an all-negative row, equal zeros and an all-NaN row. Letting ties go to the last index and letting `ArgMin` take a NaN each fail it.
+
 ## 0.0.43
 
 - Emitter: serial `And`, `Or` and `Xor` reductions over every integer dtype (seeded by the first element, as the oracle does; a float bit fold is declined by name), and `MaxNum` and `MinNum` over floats, halves and integers (a NaN element is skipped and a NaN accumulator replaced, so a row of only NaN stays NaN, where `Max` and `Min` keep a NaN once seen). The block-reduce variant stays on Sum, Mean, Prod, Max and Min. `ArgMax` and `ArgMin` are still declined by name.
