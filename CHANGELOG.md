@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.47
+
+- Dependencies: `unpopped` and `unpopped-vocab` 0.45.12 to 0.45.17 (the oracle now covers the integer Max/Min cases and the new U33 rule). No emitter change; the whole device suite is re-run against the new oracle.
+
 ## 0.0.46
 
 - Emitter: the block-reduce variant now serves `And`, `Or`, `Xor` (integer) and `MaxNum`, `MinNum`. `And` starts the tree from all ones and an empty extent still gives 0, as the serial fold does. A float `MaxNum` or `MinNum` starts from a NaN identity so a row of only NaN stays NaN, and reports `DeterministicallyDivergent` because such a row can return another NaN payload than the serial fold's last NaN; every other new case is `BitIdentical`. `ArgMax` and `ArgMin` still have no block variant.
