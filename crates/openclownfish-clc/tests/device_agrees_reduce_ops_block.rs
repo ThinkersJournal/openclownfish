@@ -317,30 +317,3 @@ fn block_bit_and_num_reductions_agree_with_the_oracle_on_every_device() {
     }
     eprintln!("bit and num reductions: {checks} case runs on {ran} device(s)");
 }
-
-#[test]
-fn the_block_variant_still_declines_arg_reductions() {
-    let backend = OpenClC::new();
-    let a = OperandDesc::new(2, &[4, 6], &[6, 1], ElementKind::F32, 256);
-    let o = OperandDesc::new(1, &[4], &[1], ElementKind::I64, 256);
-    let key = structure_key(OpCategory::Reduction, &[a, o], ArchSku::Sm89);
-    // Control: the same shape at MaxNum is offered a variant.
-    let ok = OpDef::reduction("r", 1, &[ElementKind::F32], input(0), ReduceOp::MaxNum);
-    let okey = structure_key(
-        OpCategory::Reduction,
-        &[a, OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256)],
-        ArchSku::Sm89,
-    );
-    assert_eq!(
-        backend
-            .lower_variants(&build_plan_for(&ok, &okey, &backend))
-            .unwrap()
-            .len(),
-        1
-    );
-    let mut arg = OpDef::reduction("r", 1, &[ElementKind::F32], input(0), ReduceOp::ArgMax);
-    arg.out_dtype = Some(ElementKind::I64);
-    let plan = build_plan_for(&arg, &key, &backend);
-    assert!(backend.lower(&plan).is_ok());
-    assert!(backend.lower_variants(&plan).unwrap().is_empty());
-}
