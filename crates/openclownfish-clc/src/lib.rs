@@ -19,6 +19,7 @@
 //! extension list: [`OpenClC::for_extensions`]. A plan carries no device, so the
 //! backend does.
 
+mod kernel;
 #[cfg(feature = "parse")]
 mod parse;
 #[cfg(feature = "parse")]
@@ -37,6 +38,7 @@ use unpopped_vocab::{ElementKind, TargetId};
 pub struct OpenClC {
     fp64: bool,
     fp16: bool,
+    atomics: bool,
 }
 
 impl OpenClC {
@@ -46,6 +48,7 @@ impl OpenClC {
         Self {
             fp64: false,
             fp16: false,
+            atomics: false,
         }
     }
 
@@ -57,6 +60,22 @@ impl OpenClC {
             fp64: allowed,
             ..self
         }
+    }
+
+    /// Allow `lower_kernel` to spell `AtomicRmw` and `AtomicCas` as OpenCL C 2.0 atomics. Only
+    /// set this for a device that reports OpenCL C 2.0 and build the program with
+    /// `-cl-std=CL2.0`; the kernel fails to build elsewhere. Without it those statements are
+    /// declined by name.
+    #[must_use]
+    pub const fn with_c20_atomics(self, allowed: bool) -> Self {
+        Self {
+            atomics: allowed,
+            ..self
+        }
+    }
+
+    pub(crate) const fn c20_atomics(&self) -> bool {
+        self.atomics
     }
 
     /// Convert `f16` with the device's own `half` conversions instead of the integer codec.
@@ -1915,6 +1934,13 @@ impl Backend for OpenClC {
             fidelity,
             usage.to_owned(),
         )])
+    }
+
+    fn lower_kernel(
+        &self,
+        kernel: &unpopped::kernel::KernelFn,
+    ) -> Result<GeneratedKernel, LowerError> {
+        kernel::lower_kernel(self, kernel)
     }
 
     fn lower(&self, plan: &KernelPlan<'_>) -> Result<GeneratedKernel, LowerError> {
