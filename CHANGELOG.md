@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.48
+
+- Emitter: the block-reduce variant now serves `ArgMax` and `ArgMin`, so every reduction the serial emitter serves also has a work-group variant. Each work item folds a contiguous chunk of the row-major reduced extent, keeping the best value, its position and whether it saw any element; a neighbour-pair tree then takes the later chunk only when it is strictly better. That is the serial rule (ties keep the lower index, NaN is the greatest value, all NaN gives 0) and a total order, so the variant is `BitIdentical`. The "strictly better" test is one function shared by the serial and block kernels.
+- Tests: `device_agrees_arg_reduce_block.rs` runs 594 cases on 3 devices (11 dtypes, both ops, three axis sets, block sizes 4, 16 and 64) where the kernel, the oracle and a host fold written from the rule agree. A mutant that takes the later chunk on a tie is caught. The earlier test that pinned the arg variant as declined is removed.
+
 ## 0.0.47
 
 - Dependencies: `unpopped` and `unpopped-vocab` 0.45.12 to 0.45.17 (the oracle now covers the integer Max/Min cases and the new U33 rule). No emitter change; the whole device suite is re-run against the new oracle.

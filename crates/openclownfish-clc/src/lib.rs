@@ -1198,6 +1198,17 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
     ));
 }
 
+/// Whether element `e` replaces accumulator `acc` in an arg fold: strictly better, so ties keep
+/// the earlier one. NaN orders as the greatest value.
+fn arg_better(t: Ty, max: bool) -> String {
+    match (t.int, max) {
+        (true, true) => "e > acc".to_owned(),
+        (true, false) => "e < acc".to_owned(),
+        (false, true) => "(acc == acc && (e != e || e > acc))".to_owned(),
+        (false, false) => "(e == e && (acc != acc || e < acc))".to_owned(),
+    }
+}
+
 /// `ArgMax` and `ArgMin`: the position, in the row-major order of the reduced axes, of the
 /// extreme (KISS-OPS-6.11-0007, the oracle's `arg_fold`). The first element seeds and only a
 /// strictly better one replaces it, so ties keep the lower index. NaN orders as the greatest
@@ -1205,13 +1216,7 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
 /// exists and returns 0 when every element is NaN. The output is a `long`.
 fn emit_arg_fold(s: &mut String, rc: &ReduceCx, t: Ty, body: &str) {
     let ty = t.c;
-    let max = matches!(rc.op, ReduceOp::ArgMax);
-    let better = match (t.int, max) {
-        (true, true) => "e > acc".to_owned(),
-        (true, false) => "e < acc".to_owned(),
-        (false, true) => "(acc == acc && (e != e || e > acc))".to_owned(),
-        (false, false) => "(e == e && (acc != acc || e < acc))".to_owned(),
-    };
+    let better = arg_better(t, matches!(rc.op, ReduceOp::ArgMax));
     s.push_str(&format!(
         "    {ty} acc = ({ty})0;\n    long best = 0;\n    long ri = 0;\n    int has = 0;\n"
     ));
@@ -1414,6 +1419,15 @@ fn block_prelude(op: ReduceOp, t: Ty) -> String {
     format!("#ifndef OCF_BLOCK\n#define OCF_BLOCK 64\n#endif\n\n{comb}\n\n")
 }
 
+/// What precedes the block arg kernel: the block-size macro and `ocf_better(e, acc)`.
+fn block_arg_prelude(op: ReduceOp, t: Ty) -> String {
+    let better = arg_better(t, matches!(op, ReduceOp::ArgMax));
+    format!(
+        "#ifndef OCF_BLOCK\n#define OCF_BLOCK 64\n#endif\n\nint ocf_better({ty} e, {ty} acc) {{ return {better}; }}\n\n",
+        ty = t.c
+    )
+}
+
 /// The block-reduce variant's kernel after `out`: one work-group per output
 /// element, `OCF_BLOCK` work items. Item `lid` folds a contiguous chunk of the
 /// row-major reduced extent serially; a neighbour-pair tree in `__local` memory
@@ -1489,6 +1503,74 @@ fn emit_blockreduce_body(
     };
     s.push_str(&format!(
         "    if (lid == 0) {{ {ty} red = {fin}; out[oo] = {post}; }}
+}}\n"
+    ));
+}
+
+/// The block-reduce variant of `ArgMax` and `ArgMin`: one work-group per output element. Item
+/// `lid` folds a contiguous chunk of the row-major reduced extent, keeping the best value, its
+/// position and whether it saw any element; a neighbour-pair tree in `__local` memory then takes
+/// the later chunk only when it is strictly better, so ties keep the lower index and a NaN is
+/// the greatest value (the serial fold's rule, which is a total order, so the tree is exact).
+fn emit_blockarg_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: &str) {
+    let ty = t.c;
+    emit_reduction_params(s, rank, rc);
+    s.push_str(&format!(
+        "    __local {ty} bufv[OCF_BLOCK];\n    __local long bufi[OCF_BLOCK];\n    __local int bufh[OCF_BLOCK];\n"
+    ));
+    s.push_str(
+        "    long o = (long)get_group_id(0);
+    if (o >= n_out) { return; }
+    long lid = (long)get_local_id(0);\n",
+    );
+    emit_reduction_addressing(s, rc);
+    let total = rc
+        .reduced
+        .iter()
+        .map(|r| format!("shape{r}"))
+        .collect::<Vec<_>>()
+        .join(" * ");
+    s.push_str(&format!(
+        "    long total = {total};
+    long chunk = (total + OCF_BLOCK - 1) / OCF_BLOCK;
+    long lo = lid * chunk;
+    long hi = lo + chunk;
+    if (hi > total) {{ hi = total; }}
+    {ty} acc = ({ty})0;
+    long best = 0;
+    int has = 0;
+    for (long rr = lo; rr < hi; ++rr) {{
+        long rl = rr;\n"
+    ));
+    s.push_str(&unravel_decomp(
+        rc.reduced.iter().rev().copied(),
+        "        ",
+        "rl",
+        "long",
+        |a| format!("cr{a}"),
+        |a| format!("shape{a}"),
+        false,
+    ));
+    emit_fold_offsets(s, rc, "        ");
+    s.push_str(&format!(
+        "        {{ {ty} e = {body}; if (!has || ocf_better(e, acc)) {{ acc = e; best = rr; }} has = 1; }}
+    }}
+    bufv[lid] = acc;
+    bufi[lid] = best;
+    bufh[lid] = has;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (long st = 1; st < OCF_BLOCK; st <<= 1) {{
+        if (lid % (2 * st) == 0 && lid + st < OCF_BLOCK) {{
+            long j = lid + st;
+            if (bufh[j] && (!bufh[lid] || ocf_better(bufv[j], bufv[lid]))) {{
+                bufv[lid] = bufv[j];
+                bufi[lid] = bufi[j];
+                bufh[lid] = 1;
+            }}
+        }}
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }}
+    if (lid == 0) {{ out[oo] = bufi[0]; }}
 }}\n"
     ));
 }
@@ -1689,6 +1771,8 @@ impl Backend for OpenClC {
                     | ReduceOp::And
                     | ReduceOp::Or
                     | ReduceOp::Xor
+                    | ReduceOp::ArgMax
+                    | ReduceOp::ArgMin
             ) {
                 return Ok(Vec::new());
             }
@@ -1736,12 +1820,19 @@ impl Backend for OpenClC {
         if helpers {
             s.push('\n');
         }
-        s.push_str(&block_prelude(op, t));
+        let arg = matches!(op, ReduceOp::ArgMax | ReduceOp::ArgMin);
+        if arg {
+            s.push_str(&block_arg_prelude(op, t));
+        } else {
+            s.push_str(&block_prelude(op, t));
+        }
         s.push_str(&format!("__kernel void {name}(\n"));
         for i in 0..plan.n_inputs {
             s.push_str(&format!("    __global const {}* in{i},\n", t.store));
         }
-        s.push_str(&format!("    __global {}* out,\n", t.store));
+        // An arg reduction stores its position, an `I64` (the serial plan gate requires it).
+        let out_store = if arg { "long" } else { t.store };
+        s.push_str(&format!("    __global {out_store}* out,\n"));
         let usage = if let (Some(sc), None) = (&sc, &rc) {
             emit_blockscan_body(&mut s, sc, t, &body);
             "one work-group per row: global = n_out * B, local = B, B a power of two \
@@ -1751,7 +1842,11 @@ impl Backend for OpenClC {
              Local memory: B elements of the compute type."
         } else {
             let rc = rc.as_ref().expect("reduction facts");
-            emit_blockreduce_body(&mut s, usize::from(plan.key.rank), rc, t, &body, &post);
+            if arg {
+                emit_blockarg_body(&mut s, usize::from(plan.key.rank), rc, t, &body);
+            } else {
+                emit_blockreduce_body(&mut s, usize::from(plan.key.rank), rc, t, &body, &post);
+            }
             "one work-group per output element: global = n_out * B, local = B, B a power \
              of two no larger than the device's work-group limit (default 64; build with \
              -D OCF_BLOCK=B to change it). Arguments as the serial reduction: in{k}, out, \
