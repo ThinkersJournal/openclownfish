@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.49
+
+- Emitter: an opt-in native `f16` path for devices that list `cl_khr_fp16`: `OpenClC::with_native_half(true)` (and `OpenClC::lists_native_half(extensions)` to read the device's list) swaps the integer decode and encode helpers for `(float)as_half(h)` and `as_ushort((half)x)` and adds the extension pragma. Storage stays a `ushort` pattern and arithmetic stays in `float`, rounded once to nearest even at the store, so results are the codec's; the serial and block kernels both use it. It is off by default, `for_extensions` does not turn it on, `bf16` has no native type and keeps its codec, and without it nothing changes.
+- Tests: `device_agrees_native_half.rs` sends all 65536 f16 patterns through `x*1`, `x*0.5`, `x*0.25`, `x*2`, and `x*y` and `x+y` over a bijective pairing, on every device that lists the extension (the AMD GPU and the CPU here), and requires the oracle's bits and the codec's (two NaNs agree whatever their payload). It also runs a serial and a block `Sum` and `Max` reduction natively, checks the source gate (opt-in, f16 only, `ushort` storage), and on the device without the extension (NVIDIA) checks the codec path instead. A mutant that drops the encode's last mantissa bit is caught.
+
 ## 0.0.48
 
 - Emitter: the block-reduce variant now serves `ArgMax` and `ArgMin`, so every reduction the serial emitter serves also has a work-group variant. Each work item folds a contiguous chunk of the row-major reduced extent, keeping the best value, its position and whether it saw any element; a neighbour-pair tree then takes the later chunk only when it is strictly better. That is the serial rule (ties keep the lower index, NaN is the greatest value, all NaN gives 0) and a total order, so the variant is `BitIdentical`. The "strictly better" test is one function shared by the serial and block kernels.
