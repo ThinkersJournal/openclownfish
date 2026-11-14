@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.45
+
+- Emitter: the block-scan and block-reduce variants (`lower_variants`) now serve bf16 and f16. The work-group tree folds in `float` over the decoded values, the result is rounded to the format once at the store, and the arguments are the stored `ushort` patterns. `Sum`, `Mean` and `Prod` report `DeterministicallyDivergent` (the tree reassociates), `Max` and `Min` `BitIdentical`. A fused post-expression over a half is still declined, for the variant as for the serial kernel, and the variants still keep to `Sum`, `Mean`, `Prod`, `Max` and `Min`.
+- Tests: `device_agrees_half_block.rs` runs 630 cases on 3 devices against the oracle (both formats, five reduction ops over four axis shapes, scans forward, reverse, inclusive and exclusive over rows longer than the block, block sizes 4, 16 and 64). A mutant that drops the re-encode at the block-scan store is caught.
+
 ## 0.0.44
 
 - Emitter: serial `ArgMax` and `ArgMin` over every dtype served (floats, halves and all eight integers), giving an `I64` index in the row-major order of the reduced axes. This is the first kernel whose output dtype differs from the compute dtype: `lower` now admits that only for an arg reduction with `out_dtype = Some(I64)`, which the plan gate requires. NaN orders as the greatest value, ties keep the lower index, and a row of only NaN gives 0 (KISS-OPS-6.11-0007, the oracle's `arg_fold`). The block-reduce variant still declines them.

@@ -1347,8 +1347,12 @@ fn emit_blockscan_body(s: &mut String, sc: &ScanCx, t: Ty, pre: &str) {
     } else {
         "ocf_comb(carry, buf[lid])"
     };
+    let stored = match t.half {
+        Some(h) => format!("{}_b({val})", h.prefix()),
+        None => val.to_owned(),
+    };
     s.push_str(&format!(
-        "        if (p < k) {{ out[i] = {val}; }}
+        "        if (p < k) {{ out[i] = {stored}; }}
         {ty} total = buf[OCF_BLOCK - 1];
         carry = ocf_comb(carry, total);
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -1616,6 +1620,8 @@ impl Backend for OpenClC {
         let t = match plan.dtype {
             ElementKind::F32 => F32,
             ElementKind::F64 => F64,
+            ElementKind::Bf16 => BF16,
+            ElementKind::F16 => F16,
             d => match int_ty(d) {
                 Some(t) => t,
                 None => return Ok(Vec::new()),
@@ -1678,6 +1684,13 @@ impl Backend for OpenClC {
                 helpers = true;
             }
         }
+        if let Some(h) = t
+            .half
+            .filter(|h| body.contains(h.prefix()) || post.contains(h.prefix()))
+        {
+            s.push_str(&half_helpers(h));
+            helpers = true;
+        }
         let idiv = int_div_helper(t, &body, &post);
         if !idiv.is_empty() {
             s.push_str(&idiv);
@@ -1689,9 +1702,9 @@ impl Backend for OpenClC {
         s.push_str(&block_prelude(op, t));
         s.push_str(&format!("__kernel void {name}(\n"));
         for i in 0..plan.n_inputs {
-            s.push_str(&format!("    __global const {}* in{i},\n", t.c));
+            s.push_str(&format!("    __global const {}* in{i},\n", t.store));
         }
-        s.push_str(&format!("    __global {}* out,\n", t.c));
+        s.push_str(&format!("    __global {}* out,\n", t.store));
         let usage = if let (Some(sc), None) = (&sc, &rc) {
             emit_blockscan_body(&mut s, sc, t, &body);
             "one work-group per row: global = n_out * B, local = B, B a power of two \
