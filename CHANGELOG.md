@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.50
+
+- Emitter: `Backend::lower_kernel` for the statement IR, a small subset. Integer kernels (`I32`, `U32`, `I64`, `U64`) with a launch shape, rank-1 buffers, scalar arguments, `Shared` arrays of static extent, `Let`/`Assign`/`Load`/`Store`, `If`/`While`/`Break`/`Continue`/`Return`, a block barrier, and `AtomicRmw` (`Add`, `Max`, `Min`, `And`, `Or`, `Xor`, `Exchange`) and `AtomicCas`, spelled as the OpenCL C 2.0 `atomic_fetch_*_explicit`, `atomic_exchange_explicit` and `atomic_compare_exchange_strong_explicit` (scope `Block` is `memory_scope_work_group`, `Device` is `memory_scope_device`). The atomics are opt-in with `OpenClC::with_c20_atomics(true)` and need `-cl-std=CL2.0` on a device that reports OpenCL C 2.0. Declined by name: float and 16-bit elements, the cluster-peer, peer and multicast places, subgroup, cluster and system scopes, `For`, collectives, async copies, MMA, calls, and everything else not listed. Out-of-bounds accesses are not trapped (a precondition).
+- Tests: `device_agrees_atomics.rs` runs 68 kernels on the 2 OpenCL C 2.0 devices here (AMD GPU and CPU; NVIDIA reports C 1.2 and is skipped): each op on four integer types from 128 threads against the interpreter, an add whose returned old values are a permutation, a block-scope counter in `Shared` memory with barriers, and a compare-exchange loop reaching the maximum. A mutant that spells `Max` as a minimum is caught. Declines are checked in source.
+
 ## 0.0.49
 
 - Emitter: an opt-in native `f16` path for devices that list `cl_khr_fp16`: `OpenClC::with_native_half(true)` (and `OpenClC::lists_native_half(extensions)` to read the device's list) swaps the integer decode and encode helpers for `(float)as_half(h)` and `as_ushort((half)x)` and adds the extension pragma. Storage stays a `ushort` pattern and arithmetic stays in `float`, rounded once to nearest even at the store, so results are the codec's; the serial and block kernels both use it. It is off by default, `for_extensions` does not turn it on, `bf16` has no native type and keeps its codec, and without it nothing changes.
