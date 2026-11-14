@@ -959,6 +959,8 @@ fn reduction_facts(plan: &KernelPlan<'_>, t: Ty) -> Result<ReduceCx, LowerError>
             | ReduceOp::And
             | ReduceOp::Or
             | ReduceOp::Xor
+            | ReduceOp::ArgMax
+            | ReduceOp::ArgMin
     ) {
         return Err(refuse(format!("the {op:?} reduction")));
     }
@@ -1093,6 +1095,10 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
     if (o >= n_out) { return; }\n",
     );
     emit_reduction_addressing(s, rc);
+    if matches!(rc.op, ReduceOp::ArgMax | ReduceOp::ArgMin) {
+        emit_arg_fold(s, rc, t, body);
+        return;
+    }
     let ty = t.c;
     let u = t.uns;
     let (init, step) = match rc.op {
@@ -1190,6 +1196,38 @@ fn emit_reduction_body(s: &mut String, rank: usize, rc: &ReduceCx, t: Ty, body: 
     out[oo] = {post};
 }}\n"
     ));
+}
+
+/// `ArgMax` and `ArgMin`: the position, in the row-major order of the reduced axes, of the
+/// extreme (KISS-OPS-6.11-0007, the oracle's `arg_fold`). The first element seeds and only a
+/// strictly better one replaces it, so ties keep the lower index. NaN orders as the greatest
+/// value: `ArgMax` takes the first NaN and then stays, `ArgMin` never takes a NaN while a number
+/// exists and returns 0 when every element is NaN. The output is a `long`.
+fn emit_arg_fold(s: &mut String, rc: &ReduceCx, t: Ty, body: &str) {
+    let ty = t.c;
+    let max = matches!(rc.op, ReduceOp::ArgMax);
+    let better = match (t.int, max) {
+        (true, true) => "e > acc".to_owned(),
+        (true, false) => "e < acc".to_owned(),
+        (false, true) => "(acc == acc && (e != e || e > acc))".to_owned(),
+        (false, false) => "(e == e && (acc != acc || e < acc))".to_owned(),
+    };
+    s.push_str(&format!(
+        "    {ty} acc = ({ty})0;\n    long best = 0;\n    long ri = 0;\n    int has = 0;\n"
+    ));
+    for &r in &rc.reduced {
+        s.push_str(&format!(
+            "    for (long cr{r} = 0; cr{r} < shape{r}; ++cr{r}) {{\n"
+        ));
+    }
+    emit_fold_offsets(s, rc, "    ");
+    s.push_str(&format!(
+        "    {{ {ty} e = {body}; if (!has || {better}) {{ acc = e; best = ri; }} has = 1; ++ri; }}\n"
+    ));
+    for _ in &rc.reduced {
+        s.push_str("    }\n");
+    }
+    s.push_str("    out[oo] = best;\n}\n");
 }
 
 /// What a scan kernel computes along the innermost axis.
@@ -1688,7 +1726,15 @@ impl Backend for OpenClC {
     }
 
     fn lower(&self, plan: &KernelPlan<'_>) -> Result<GeneratedKernel, LowerError> {
-        if plan.out_dtype != plan.dtype {
+        // An arg reduction gives an index, an `I64` (the plan gate requires it).
+        let arg_reduce = matches!(
+            plan.access,
+            Access::Reduction {
+                op: ReduceOp::ArgMax | ReduceOp::ArgMin,
+                ..
+            }
+        ) && plan.out_dtype == ElementKind::I64;
+        if plan.out_dtype != plan.dtype && !arg_reduce {
             return Err(LowerError::UnsupportedDtype {
                 dtype: plan.out_dtype,
                 detail: "opencl_c v1: output dtype must equal the compute dtype".to_owned(),
@@ -1823,7 +1869,8 @@ impl Backend for OpenClC {
         for i in 0..plan.n_inputs {
             s.push_str(&format!("    __global const {}* in{i},\n", t.store));
         }
-        s.push_str(&format!("    __global {}* out,\n", t.store));
+        let out_store = if arg_reduce { "long" } else { t.store };
+        s.push_str(&format!("    __global {out_store}* out,\n"));
         match &strided {
             None if scan.is_some() => {
                 let (sc, _) = scan.as_ref().unwrap();
