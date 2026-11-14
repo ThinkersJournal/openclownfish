@@ -16,6 +16,17 @@
 //! `Device` is `memory_scope_device`; every other scope, the `ClusterPeer`, `Peer` and `Multicast`
 //! places, floats and 16-bit elements are declined.
 //!
+//! # Patent risk note
+//!
+//! Published on CireSnave's ruling of 2026-11-14 ("441: A.", board item 441), not a clearance.
+//! Two patents were read against this emitter and found outside as read: US7627723B1 (NVIDIA,
+//! atomic memory operators in a parallel processor; its independent claims need execution units
+//! with address-range routing of the instruction) and US9513976B2 (Intel; a compare-and-swap
+//! lock using a software parameter that emulates a full/empty bit). This module only spells
+//! Khronos-defined OpenCL C 2.0 atomic builtins as text; it has neither element. A project that
+//! builds a lowering with execution units, address routing or an emulated full/empty bit owns
+//! that risk. See the PS1 row of `ROADMAP.md`.
+//!
 //! # The kernel
 //!
 //! `__kernel void NAME(args)` in `KernelFn::params` order: a buffer is `__global T* bI` (`const`
