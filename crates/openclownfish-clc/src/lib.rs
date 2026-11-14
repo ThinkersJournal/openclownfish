@@ -36,28 +36,55 @@ use unpopped_vocab::{ElementKind, TargetId};
 #[derive(Copy, Clone, Debug, Default)]
 pub struct OpenClC {
     fp64: bool,
+    fp16: bool,
 }
 
 impl OpenClC {
     /// A backend that emits `f32` only.
     #[must_use]
     pub const fn new() -> Self {
-        Self { fp64: false }
+        Self {
+            fp64: false,
+            fp16: false,
+        }
     }
 
     /// Allow (or forbid) `f64` plans. Only set this for a device that lists
     /// `cl_khr_fp64`; a kernel using `double` fails to build elsewhere.
     #[must_use]
     pub const fn with_fp64(self, allowed: bool) -> Self {
-        Self { fp64: allowed }
+        Self {
+            fp64: allowed,
+            ..self
+        }
+    }
+
+    /// Convert `f16` with the device's own `half` conversions instead of the integer codec.
+    /// Only set this for a device that lists `cl_khr_fp16`; a kernel using it fails to build
+    /// elsewhere. Storage stays a `ushort` pattern and arithmetic stays in `float`, rounding
+    /// once to nearest even at the store, so the results are the codec's; what changes is how
+    /// the kernel decodes and encodes. `bf16` has no native type and keeps its codec.
+    #[must_use]
+    pub const fn with_native_half(self, allowed: bool) -> Self {
+        Self {
+            fp16: allowed,
+            ..self
+        }
     }
 
     /// A backend for a device with these extensions (for example from
     /// `openclownfish::Device::extensions`): `f64` is allowed iff `cl_khr_fp64`
-    /// is among them.
+    /// is among them. This does not turn on the native `f16` path; ask for it with
+    /// [`OpenClC::with_native_half`].
     #[must_use]
     pub fn for_extensions<'a>(extensions: impl IntoIterator<Item = &'a str>) -> Self {
         Self::new().with_fp64(extensions.into_iter().any(|e| e == "cl_khr_fp64"))
+    }
+
+    /// Whether `extensions` list `cl_khr_fp16`, the one [`OpenClC::with_native_half`] needs.
+    #[must_use]
+    pub fn lists_native_half<'a>(extensions: impl IntoIterator<Item = &'a str>) -> bool {
+        extensions.into_iter().any(|e| e == "cl_khr_fp16")
     }
 }
 
@@ -755,10 +782,11 @@ fn half_value(e: &ScalarExpr, cx: Cx<'_>) -> Result<Hv, LowerError> {
 /// keeps a bf16 NaN quiet with its payload's top bits and stores an f16 NaN as
 /// the canonical quiet NaN with its sign. `Max`/`Min` compare as floats but return
 /// a pattern unchanged: NaN first (an `a` NaN wins, else a `b` NaN), a tie keeps `a`.
-fn half_helpers(fmt: Half) -> String {
+fn half_helpers(fmt: Half, native: bool) -> String {
     let p = fmt.prefix();
     let codec = match fmt {
         Half::Bf16 => BF16_CODEC,
+        Half::F16 if native => F16_NATIVE_CODEC,
         Half::F16 => F16_CODEC,
     };
     let minmax = "inline ushort P_max(ushort a, ushort b) {
@@ -783,6 +811,12 @@ inline ushort P_b(float x) {
     if ((u & 0x7fffffffu) > 0x7f800000u) { return (ushort)((u >> 16) | 0x0040u); }
     return (ushort)((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
 }
+";
+
+/// The same two helpers over the device's `half` type (`cl_khr_fp16`): a reinterpret of the
+/// stored pattern and a conversion, which OpenCL C rounds to nearest even.
+const F16_NATIVE_CODEC: &str = "inline float P_f(ushort h) { return (float)as_half(h); }
+inline ushort P_b(float x) { return as_ushort((half)x); }
 ";
 
 /// Integer codec for binary16, so the kernel needs no `cl_khr_fp16`: decode
@@ -1797,6 +1831,9 @@ impl Backend for OpenClC {
         if t.c == "double" {
             s.push_str("#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n");
         }
+        if self.fp16 && t.half == Some(Half::F16) {
+            s.push_str("#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n");
+        }
         s.push_str("#pragma OPENCL FP_CONTRACT OFF\n\n");
         let mut helpers = false;
         for (call, text) in HELPERS {
@@ -1809,7 +1846,7 @@ impl Backend for OpenClC {
             .half
             .filter(|h| body.contains(h.prefix()) || post.contains(h.prefix()))
         {
-            s.push_str(&half_helpers(h));
+            s.push_str(&half_helpers(h, self.fp16));
             helpers = true;
         }
         let idiv = int_div_helper(t, &body, &post);
@@ -1998,6 +2035,9 @@ impl Backend for OpenClC {
         if t.c == "double" {
             s.push_str("#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n");
         }
+        if self.fp16 && t.half == Some(Half::F16) {
+            s.push_str("#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n");
+        }
         // Without this a compiler may fuse a*b+c into one rounding, so results
         // would differ from the unfused reference and between vendors.
         s.push_str("#pragma OPENCL FP_CONTRACT OFF\n\n");
@@ -2009,7 +2049,7 @@ impl Backend for OpenClC {
             }
         }
         if let Some(h) = t.half.filter(|h| body.contains(h.prefix())) {
-            s.push_str(&half_helpers(h));
+            s.push_str(&half_helpers(h, self.fp16));
             helpers = true;
         }
         let idiv = int_div_helper(t, &body, &post);
