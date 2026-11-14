@@ -1288,7 +1288,12 @@ fn scan_ident(op: ReduceOp, t: Ty) -> String {
     match op {
         ReduceOp::Sum | ReduceOp::Mean => format!("({ty})0"),
         ReduceOp::Prod => format!("({ty})1"),
-        _ => match (t.int, matches!(op, ReduceOp::Max)) {
+        // Every bit set: the identity of `And` (the unsigned cast keeps it in range).
+        ReduceOp::And => format!("(({ty})(~({u})0))", u = t.uns),
+        ReduceOp::Or | ReduceOp::Xor => format!("({ty})0"),
+        // A NaN is the identity of the NaN-skipping folds, so a row of only NaN stays NaN.
+        ReduceOp::MaxNum | ReduceOp::MinNum if !t.int => format!("(({ty})NAN)"),
+        _ => match (t.int, matches!(op, ReduceOp::Max | ReduceOp::MaxNum)) {
             (true, true) => t.lo.to_owned(),
             (true, false) => t.hi.to_owned(),
             (false, true) => format!("(({ty})-INFINITY)"),
@@ -1378,8 +1383,27 @@ fn block_prelude(op: ReduceOp, t: Ty) -> String {
                 format!("{ty} ocf_comb({ty} a, {ty} b) {{ return a {c} b; }}")
             }
         }
+        ReduceOp::And | ReduceOp::Or | ReduceOp::Xor => {
+            let c = match op {
+                ReduceOp::And => "&",
+                ReduceOp::Or => "|",
+                _ => "^",
+            };
+            format!("{ty} ocf_comb({ty} a, {ty} b) {{ return ({ty})(a {c} b); }}")
+        }
+        ReduceOp::MaxNum | ReduceOp::MinNum if !t.int => {
+            let c = if matches!(op, ReduceOp::MaxNum) {
+                ">"
+            } else {
+                "<"
+            };
+            // The serial fold's step: a NaN element is skipped, a NaN accumulator replaced.
+            format!(
+                "{ty} ocf_comb({ty} a, {ty} b) {{ return (a != a || (b == b && b {c} a)) ? b : a; }}"
+            )
+        }
         _ => {
-            let c = if matches!(op, ReduceOp::Max) {
+            let c = if matches!(op, ReduceOp::Max | ReduceOp::MaxNum) {
                 ">"
             } else {
                 "<"
@@ -1456,7 +1480,11 @@ fn emit_blockreduce_body(
         ReduceOp::Mean => format!("buf[0] / ({ty})(total)"),
         // An empty reduced extent leaves 0 for floats (the serial seed), not the
         // infinity the tree starts from; integer seeds are the identity itself.
-        ReduceOp::Max | ReduceOp::Min if !t.int => format!("(total == 0 ? ({ty})0 : buf[0])"),
+        ReduceOp::Max | ReduceOp::Min | ReduceOp::MaxNum | ReduceOp::MinNum if !t.int => {
+            format!("(total == 0 ? ({ty})0 : buf[0])")
+        }
+        // `And` starts from all ones, the serial fold from its first element: 0 when empty.
+        ReduceOp::And => format!("(total == 0 ? ({ty})0 : buf[0])"),
         _ => "buf[0]".to_owned(),
     };
     s.push_str(&format!(
@@ -1651,7 +1679,16 @@ impl Backend for OpenClC {
             // The block variant is written for the ops it was checked on.
             if !matches!(
                 r.op,
-                ReduceOp::Sum | ReduceOp::Mean | ReduceOp::Prod | ReduceOp::Max | ReduceOp::Min
+                ReduceOp::Sum
+                    | ReduceOp::Mean
+                    | ReduceOp::Prod
+                    | ReduceOp::Max
+                    | ReduceOp::Min
+                    | ReduceOp::MaxNum
+                    | ReduceOp::MinNum
+                    | ReduceOp::And
+                    | ReduceOp::Or
+                    | ReduceOp::Xor
             ) {
                 return Ok(Vec::new());
             }
@@ -1724,7 +1761,17 @@ impl Backend for OpenClC {
         };
         // Float Sum/Mean/Prod are reassociated by the tree; everything else
         // picks an operand or wraps exactly, so it is the serial fold's bits.
-        let reassociates = !t.int && matches!(op, ReduceOp::Sum | ReduceOp::Mean | ReduceOp::Prod);
+        // The NaN-skipping folds start from a canonical NaN, so a row of only NaN can come back
+        // with another payload than the serial fold's last NaN.
+        let reassociates = !t.int
+            && matches!(
+                op,
+                ReduceOp::Sum
+                    | ReduceOp::Mean
+                    | ReduceOp::Prod
+                    | ReduceOp::MaxNum
+                    | ReduceOp::MinNum
+            );
         let fidelity = if reassociates {
             VariantFidelity::DeterministicallyDivergent
         } else {

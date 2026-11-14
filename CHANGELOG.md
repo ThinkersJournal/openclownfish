@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.46
+
+- Emitter: the block-reduce variant now serves `And`, `Or`, `Xor` (integer) and `MaxNum`, `MinNum`. `And` starts the tree from all ones and an empty extent still gives 0, as the serial fold does. A float `MaxNum` or `MinNum` starts from a NaN identity so a row of only NaN stays NaN, and reports `DeterministicallyDivergent` because such a row can return another NaN payload than the serial fold's last NaN; every other new case is `BitIdentical`. `ArgMax` and `ArgMin` still have no block variant.
+- Tests: `device_agrees_reduce_ops_block.rs` runs 840 cases per device against the oracle (eight integer dtypes, f32, f64, bf16, f16, five axis shapes, block sizes 4, 16 and 64). A mutant giving `And` an identity of 0 is caught.
+
 ## 0.0.45
 
 - Emitter: the block-scan and block-reduce variants (`lower_variants`) now serve bf16 and f16. The work-group tree folds in `float` over the decoded values, the result is rounded to the format once at the store, and the arguments are the stored `ushort` patterns. `Sum`, `Mean` and `Prod` report `DeterministicallyDivergent` (the tree reassociates), `Max` and `Min` `BitIdentical`. A fused post-expression over a half is still declined, for the variant as for the serial kernel, and the variants still keep to `Sum`, `Mean`, `Prod`, `Max` and `Min`.
