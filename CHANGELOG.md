@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+- Emitter: `Backend::lower_kernel` now spells `F32` and `F64` kernels: float buffers, scalars, locals and `Shared` arrays; `Const`, `Add`, `Sub`, `Mul`, `Neg`, `Fma`, the six comparisons, and `Div` on `F64`. `F64` needs `OpenClC::with_fp64`. `#pragma OPENCL FP_CONTRACT OFF` is written. An `F32` statement follows the oracle (evaluated at `f64`, rounded once per statement): with `with_fp64` the leaves are widened to `double`; without it a statement may hold one rounding operation and a constant that is exactly an `f32`, and anything else is declined by name. Declined by name: float atomics (unchanged), float `Max`/`Min`, a cast from a float, the transcendental unary ops, `Select`, `F16`/`Bf16`, and `F32` `Div` (NVIDIA's float division is 1 ULP off the oracle, also when written at `double`; recorded in `docs/device-reports.md`).
+- Tests: `device_agrees_float.rs` runs 27 kernels on 3 devices (a Horner loop, a branch with `Div`, `Neg`, `Fma` and a `Const`, a `While`; inputs with NaN, both infinities and both zeros) bit for bit against the interpreter. Evaluating `F32` at `float` instead of `double` fails the Horner kernel on NVIDIA (it was the first version, observed).
+- Patent: no new search. Plain float loads, stores and arithmetic add no atomics, execution units, address routing or full/empty-bit lock; float atomics stay declined, so the PS1 read of 2026-11-14 is unchanged.
+
 ## 0.1.1
 
 - Emitter: `Backend::lower_kernel` now spells `Stmt::For` (integer counter and bounds, `I32`, `U32`, `I64`, `U64`). It matches the oracle: bounds read once, the direction from the sign of the step, and a stop instead of a wrap when the next counter would leave the type; the advance is in the `for` header so `Continue` takes it, done in the unsigned type so signed counters never overflow in C. A zero step is a caller precondition. 0.47.0's `Stmt::For` carries no unroll hint, so no `#pragma unroll` is written. Patent: no new search; the change adds no atomics, execution units, address routing or full/empty-bit lock, so the PS1 read of 2026-11-14 is unchanged.

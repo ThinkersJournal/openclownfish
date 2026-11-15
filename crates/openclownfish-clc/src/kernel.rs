@@ -1,11 +1,27 @@
 //! A kernel-layer [`KernelFn`] spelled as an OpenCL C kernel: the statement-IR path
 //! (`Backend::lower_kernel`), a deliberately small subset.
 //!
-//! What is spelled: integer kernels (`I32`, `U32`, `I64`, `U64`) with a launch shape, rank-1
+//! What is spelled: integer and float (`F32`, `F64`) kernels with a launch shape, rank-1
 //! buffers, scalar arguments, `Shared` arrays of static extent, `Let`/`Assign`/`Load`/`Store`,
 //! `If`/`While`/`For`/`Break`/`Continue`/`Return`, a block `Barrier`, and the two atomic statements
 //! `AtomicRmw` and `AtomicCas`. Everything else is declined by name with
 //! [`LowerError::UnsupportedKernel`]; nothing is spelled by default.
+//!
+//! # Floats
+//!
+//! `F32` and `F64` (`F64` only with [`OpenClC::with_fp64`], and the build needs `cl_khr_fp64`)
+//! elements in buffers, scalars, locals and `Shared` arrays; `Const`, `Add`, `Sub`, `Mul`,
+//! `Div`, `Neg`, `Fma` and the six comparisons. `#pragma OPENCL FP_CONTRACT OFF` is written so
+//! each operation rounds once. An `F32` expression follows the oracle: it is evaluated at
+//! `f64` and rounded once per statement. With `with_fp64` the emitter does exactly that (the
+//! leaves are widened to `double`); without it an `F32` statement may hold at most one rounding
+//! operation (where the two agree) and anything more, `Fma` included, is declined by name.
+//! `F32` `Div` is declined in both modes: OpenCL C bounds float division at 2.5 ULP and NVIDIA's
+//! is 1 ULP off the oracle, even when the source divides at `double` (the compiler narrows it).
+//! Declined by name: float atomics, `Max` and `Min` on floats, a
+//! cast from a float, the transcendental unary ops, `Select`, and `F16`/`Bf16`. `Div` relies on
+//! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
+//! rounding; the device test checks it bit for bit on every device here.
 //!
 //! # Counted loops
 //!
@@ -48,7 +64,7 @@ use std::fmt::Write as _;
 
 use unpopped::backend::{GeneratedKernel, LowerError};
 use unpopped::exec::{Extent, MemorySpace, Scope};
-use unpopped::ir::{BinaryOp, Saturation, ScalarExpr};
+use unpopped::ir::{BinaryOp, Saturation, ScalarExpr, UnaryOp};
 use unpopped::kernel::{
     AtomicOp, BarrierKind, Block, KernelFn, MemoryOrder, ParamKind, Place, Stmt, check_kernel,
 };
@@ -80,12 +96,20 @@ fn bits(e: ElementKind) -> u32 {
     }
 }
 
+fn is_float(e: ElementKind) -> bool {
+    matches!(e, ElementKind::F32 | ElementKind::F64)
+}
+
 fn ctype(e: ElementKind, what: &str) -> Result<&'static str, LowerError> {
-    int_c(e).map(|c| c.0).ok_or_else(|| {
-        refuse(format!(
-            "{what} has element {e:?}; only I32, U32, I64 and U64 are spelled"
-        ))
-    })
+    match e {
+        ElementKind::F32 => Ok("float"),
+        ElementKind::F64 => Ok("double"),
+        _ => int_c(e).map(|c| c.0).ok_or_else(|| {
+            refuse(format!(
+                "{what} has element {e:?}; only I32, U32, I64, U64, F32 and F64 are spelled"
+            ))
+        }),
+    }
 }
 
 fn order(o: MemoryOrder) -> &'static str {
@@ -120,6 +144,9 @@ fn scope(s: Scope) -> Result<&'static str, LowerError> {
 struct Em<'a> {
     k: &'a KernelFn,
     atomics: bool,
+    /// `F32` expressions are evaluated in `double` and rounded once per statement, as the oracle
+    /// does (needs `cl_khr_fp64`; set by `OpenClC::with_fp64`).
+    wide: bool,
     out: String,
     depth: usize,
 }
@@ -146,9 +173,36 @@ impl Em<'_> {
         match e {
             ScalarExpr::Local(i) => self.local_elem(*i),
             ScalarExpr::ConstInt(_, k) => Ok(*k),
+            ScalarExpr::Const(_) if is_float(self.k.compute) => Ok(self.k.compute),
             ScalarExpr::Exec(_) => Ok(ElementKind::U32),
+            ScalarExpr::Div(a, b) => {
+                let (x, y) = (self.ty(a)?, self.ty(b)?);
+                if x == y && is_float(x) {
+                    Ok(x)
+                } else {
+                    Err(refuse("a Div other than of two floats of one type"))
+                }
+            }
+            ScalarExpr::Unary(UnaryOp::Neg, x) => {
+                let x = self.ty(x)?;
+                if is_float(x) {
+                    Ok(x)
+                } else {
+                    Err(refuse("a Neg of a non-float"))
+                }
+            }
+            ScalarExpr::Fma(a, b, c) => {
+                let (x, y, z) = (self.ty(a)?, self.ty(b)?, self.ty(c)?);
+                if x == y && y == z && is_float(x) {
+                    Ok(x)
+                } else {
+                    Err(refuse("an Fma other than of three floats of one type"))
+                }
+            }
             ScalarExpr::Cast(x, spec) => {
-                self.ty(x)?;
+                if is_float(self.ty(x)?) {
+                    return Err(refuse("a cast from a float"));
+                }
                 if spec.sat != Saturation::Wrap {
                     return Err(refuse("a saturating cast"));
                 }
@@ -175,9 +229,41 @@ impl Em<'_> {
         }
     }
 
+    /// How many rounding operations an `F32` expression performs (`Fma` counts as two: the
+    /// oracle's `f64` fused multiply-add rounded to `f32` is not the device's `f32` one).
+    fn f32_roundings(&self, e: &ScalarExpr) -> usize {
+        let is32 = |x: &ScalarExpr| self.ty(x).ok() == Some(ElementKind::F32);
+        match e {
+            ScalarExpr::Add(a, b)
+            | ScalarExpr::Sub(a, b)
+            | ScalarExpr::Mul(a, b)
+            | ScalarExpr::Div(a, b) => {
+                usize::from(is32(e)) + self.f32_roundings(a) + self.f32_roundings(b)
+            }
+            ScalarExpr::Fma(a, b, c) => {
+                2 * usize::from(is32(e))
+                    + self.f32_roundings(a)
+                    + self.f32_roundings(b)
+                    + self.f32_roundings(c)
+            }
+            ScalarExpr::Unary(_, x) | ScalarExpr::Cast(x, _) => self.f32_roundings(x),
+            ScalarExpr::Binary(_, a, b) => self.f32_roundings(a) + self.f32_roundings(b),
+            _ => 0,
+        }
+    }
+
     fn expr(&self, e: &ScalarExpr) -> Result<String, LowerError> {
+        if !self.wide && self.f32_roundings(e) > 1 {
+            return Err(refuse(
+                "an F32 expression with more than one rounding operation needs with_fp64 \
+                 (the oracle evaluates it at f64 and rounds once per statement)",
+            ));
+        }
         use unpopped::exec::ExecId;
         Ok(match e {
+            ScalarExpr::Local(i) if self.wide && self.local_elem(*i)? == ElementKind::F32 => {
+                format!("((double)l{i})")
+            }
             ScalarExpr::Local(i) => format!("l{i}"),
             ScalarExpr::ConstInt(v, k) => {
                 let (c, _, _) =
@@ -189,6 +275,52 @@ impl Em<'_> {
                     _ => format!("(({c}){}ul)", *v as u64),
                 }
             }
+            ScalarExpr::Const(v) => {
+                if !v.is_finite() {
+                    return Err(refuse("a non-finite constant"));
+                }
+                let c = ctype(self.k.compute, "a constant")?;
+                // The shortest decimal that reads back to the same f64, then one conversion
+                // to the compute type (round to nearest even), as the oracle does.
+                if self.k.compute == ElementKind::F32 {
+                    // The oracle keeps the f64 value inside an expression it evaluates at f64.
+                    if self.wide {
+                        format!("((double){v:?})")
+                    } else if f64::from(*v as f32) == *v {
+                        format!("((float){v:?})")
+                    } else {
+                        return Err(refuse(
+                            "an F32 constant that is not exactly an f32 needs with_fp64                              (the oracle uses its f64 value)",
+                        ));
+                    }
+                } else {
+                    format!("(({c}){v:?})")
+                }
+            }
+            ScalarExpr::Div(a, b) => {
+                if self.ty(e)? == ElementKind::F32 {
+                    // OpenCL C float division is within 2.5 ULP, not correctly rounded, and a
+                    // compiler may narrow a double division of widened floats back to it:
+                    // NVIDIA's is 1 ULP off the oracle here, with or without with_fp64.
+                    return Err(refuse(
+                        "an F32 Div (the device's float division is not correctly rounded)",
+                    ));
+                }
+                format!("(({}) / ({}))", self.expr(a)?, self.expr(b)?)
+            }
+            ScalarExpr::Unary(UnaryOp::Neg, x) => {
+                self.ty(e)?;
+                format!("(-({}))", self.expr(x)?)
+            }
+            ScalarExpr::Fma(a, b, c) => {
+                self.ty(e)?;
+                format!(
+                    "fma(({}), ({}), ({}))",
+                    self.expr(a)?,
+                    self.expr(b)?,
+                    self.expr(c)?
+                )
+            }
             ScalarExpr::Exec(id) => match id {
                 ExecId::ThreadIdx(a) => format!("((uint)get_local_id({a}))"),
                 ExecId::BlockIdx(a) => format!("((uint)get_group_id({a}))"),
@@ -199,12 +331,15 @@ impl Em<'_> {
             // Signed overflow is undefined in C: wrap through the unsigned type of the same width.
             ScalarExpr::Add(a, b) | ScalarExpr::Sub(a, b) | ScalarExpr::Mul(a, b) => {
                 let t = self.ty(e)?;
-                let (c, _, u) = int_c(t).ok_or_else(|| refuse("an arithmetic type"))?;
                 let op = match e {
                     ScalarExpr::Add(..) => '+',
                     ScalarExpr::Sub(..) => '-',
                     _ => '*',
                 };
+                if is_float(t) {
+                    return Ok(format!("(({}) {op} ({}))", self.expr(a)?, self.expr(b)?));
+                }
+                let (c, _, u) = int_c(t).ok_or_else(|| refuse("an arithmetic type"))?;
                 format!(
                     "(({c})(({u})({}) {op} ({u})({})))",
                     self.expr(a)?,
@@ -224,7 +359,12 @@ impl Em<'_> {
             }
             ScalarExpr::Binary(op, a, b) => {
                 let t = self.ty(e)?;
-                let (c, _, _) = int_c(t).ok_or_else(|| refuse("a comparison type"))?;
+                let c = ctype(t, "a comparison")?;
+                if is_float(t) && matches!(op, BinaryOp::Max | BinaryOp::Min) {
+                    return Err(refuse(
+                        "a float Max or Min (NaN and signed-zero rules are not matched)",
+                    ));
+                }
                 let (x, y) = (self.expr(a)?, self.expr(b)?);
                 let cmp = |o: &str| format!("(({x}) {o} ({y}) ? ({c})1 : ({c})0)");
                 match op {
@@ -550,6 +690,21 @@ pub(crate) fn lower_kernel(oc: &OpenClC, k: &KernelFn) -> Result<GeneratedKernel
         ));
     }
     ctype(k.compute, "the compute dtype")?;
+    let mut used = vec![k.compute];
+    used.extend(k.locals.iter().map(|d| d.elem));
+    used.extend(k.allocs.iter().map(|a| a.elem));
+    for p in &k.params {
+        match &p.kind {
+            ParamKind::Buffer { elem, .. } => used.push(*elem),
+            ParamKind::Scalar { ty, .. } => used.push(*ty),
+            _ => {}
+        }
+    }
+    if used.contains(&ElementKind::F64) && !oc.fp64 {
+        return Err(refuse(
+            "an F64 element needs a device with cl_khr_fp64 (OpenClC::with_fp64)",
+        ));
+    }
 
     let mut head = String::new();
     let mut scalars = Vec::new();
@@ -588,6 +743,7 @@ pub(crate) fn lower_kernel(oc: &OpenClC, k: &KernelFn) -> Result<GeneratedKernel
     let mut em = Em {
         k,
         atomics: oc.c20_atomics(),
+        wide: oc.fp64,
         out: String::new(),
         depth: 1,
     };
@@ -615,6 +771,17 @@ pub(crate) fn lower_kernel(oc: &OpenClC, k: &KernelFn) -> Result<GeneratedKernel
         s,
         "// Built from a kernel-layer KernelFn; atomics need OpenCL C 2.0 (-cl-std=CL2.0)."
     );
+    if used.contains(&ElementKind::F64) {
+        s.push_str("#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n");
+    }
+    if oc.fp64 && !used.contains(&ElementKind::F64) && used.contains(&ElementKind::F32) {
+        // `F32` expressions are evaluated in `double` here, which needs the extension too.
+        s.push_str("#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n");
+    }
+    if used.iter().any(|e| is_float(*e)) {
+        // One rounding per operation, as the oracle has: no fused multiply-add behind our back.
+        s.push_str("#pragma OPENCL FP_CONTRACT OFF\n");
+    }
     let _ = writeln!(s, "__kernel void {}({head}) {{", k.name);
     s.push_str(&em.out);
     s.push_str("}\n");

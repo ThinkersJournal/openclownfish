@@ -29,6 +29,12 @@ which gates any half-precision emission.
 
 A Hillis-Steele step written as `if (lid >= off) left = buf[lid - off];` barrier `if (lid >= off) buf[lid] = comb(left, buf[lid]);` barrier gave wrong f32 Prod results from the Intel CPU runtime at work-group size 32 (row of 19, wrong from element 16, the `off = 16` step); the same kernel was right on the NVIDIA and AMD devices, and the Intel CPU was right at size 8. Written branch-free (`left = buf[lid >= off ? lid - off : lid]`, barrier, `buf[lid] = lid >= off ? comb(left, mine) : mine`, barrier) it agrees everywhere. I read the masked form as valid OpenCL C, but I did not isolate the cause (driver fault or an error of mine): treat it as unconfirmed. The emitter uses the branch-free form.
 
+## Finding: NVIDIA float division is not correctly rounded (laptop, Windows, 2026-11-15)
+
+An `F32` `x / y` kernel on the RTX 4070 Laptop (OpenCL C 1.2 stack) came back 1 ULP from Unpopped's oracle in 1 of 128 lanes (bits `..e3` against `..e2`); `x * y` agreed on all lanes and all three devices. This is within what OpenCL C allows (float division is bounded at 2.5 ULP; correct rounding is optional), so it is not a fault. Dividing at `double` and rounding once did not help: the compiler narrows `(float)((double)a / (double)b)` back to its float division (same wrong lane). The kernel emitter therefore declines `F32` `Div` by name; `F64` `Div` (correctly rounded by the OpenCL C rules) agrees on all three devices.
+
+A second difference, in the oracle and not a device fault: Unpopped evaluates an `F32` expression at `f64` and rounds once per statement, so `acc * x + y` is one rounding where C on `float` operands is two. The emitter matches the oracle by evaluating `F32` statements at `double` (needs `cl_khr_fp64`); without it only a statement of one rounding operation is accepted.
+
 ## Desktop rig (RTX 4060, Radeon VII, Arc A770, Tesla P40)
 
 - Windows: UNVERIFIED (not booted for this project yet).
