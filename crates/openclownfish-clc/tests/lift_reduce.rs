@@ -10,9 +10,9 @@
 
 use openclownfish::{Context, Program, Runtime};
 use openclownfish_clc::{OPENCL_C, OpenClC};
-use unpopped::convert::{lift, lift_reduction, lift_scan};
 use unpopped::ir::Access;
 use unpopped::{build_plan, generate};
+use unpopped_convert::{lift, lift_reduction, lift_scan};
 use unpopped_vocab::{ArchSku, ElementKind, OpCategory, OperandDesc, structure_key};
 
 const F32: &[ElementKind] = &[ElementKind::F32];

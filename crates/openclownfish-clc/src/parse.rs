@@ -1,8 +1,8 @@
 //! OpenCL C source to Unpopped IR: a `Frontend` over the C grammar.
 
 use tree_sitter::{Parser, Tree};
-use unpopped::convert::Frontend;
 use unpopped::ir::{BinaryOp, UnaryOp};
+use unpopped_convert::Frontend;
 
 /// Parse OpenCL C into a tree-sitter CST with the C++ grammar. OpenCL C is C99
 /// plus qualifiers (`__kernel`, `__global`), which the grammar tolerates as
