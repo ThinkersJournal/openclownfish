@@ -3,9 +3,19 @@
 //!
 //! What is spelled: integer kernels (`I32`, `U32`, `I64`, `U64`) with a launch shape, rank-1
 //! buffers, scalar arguments, `Shared` arrays of static extent, `Let`/`Assign`/`Load`/`Store`,
-//! `If`/`While`/`Break`/`Continue`/`Return`, a block `Barrier`, and the two atomic statements
+//! `If`/`While`/`For`/`Break`/`Continue`/`Return`, a block `Barrier`, and the two atomic statements
 //! `AtomicRmw` and `AtomicCas`. Everything else is declined by name with
 //! [`LowerError::UnsupportedKernel`]; nothing is spelled by default.
+//!
+//! # Counted loops
+//!
+//! `For` follows the oracle: the three bounds are read once, the loop runs while the counter is
+//! below `end` (above it for a negative step), and it stops rather than wrap when the next
+//! counter value would leave the type. The advance sits in the C `for` header so `Continue`
+//! still takes it, and it is computed in the unsigned type so a signed counter never overflows
+//! in C. The counter and bounds are one of the four integer types. A zero step is a caller
+//! precondition (the oracle traps; the emitted loop would not end). 0.47.0's `Stmt::For` has no
+//! unroll hint, so none is spelled.
 //!
 //! # Atomics
 //!
@@ -289,6 +299,65 @@ impl Em<'_> {
         Ok(())
     }
 
+    /// A counted loop, spelled to match the oracle: the three bounds are read once, the loop
+    /// runs while the counter is below `end` (above it for a negative step), and it stops
+    /// rather than wrap when the next counter value would leave the type. The advance is in the
+    /// `for` header so `continue` still takes it, and it is done in the unsigned type so a
+    /// signed counter never overflows in C. A zero step is a caller precondition (the oracle
+    /// traps; here it would not end).
+    fn for_loop(
+        &mut self,
+        local: u32,
+        bounds: [&ScalarExpr; 3],
+        body: &Block,
+    ) -> Result<(), LowerError> {
+        let e = self.local_elem(local)?;
+        let (c, _, u) = int_c(e).ok_or_else(|| refuse("a For counter that is not an integer"))?;
+        for b in bounds {
+            if self.ty(b)? != e {
+                return Err(refuse("For bounds of another type than the counter"));
+            }
+        }
+        let signed = matches!(e, ElementKind::I32 | ElementKind::I64);
+        let (max, min) = match e {
+            ElementKind::I32 => ("INT_MAX", "INT_MIN"),
+            ElementKind::I64 => ("LONG_MAX", "LONG_MIN"),
+            ElementKind::U32 => ("UINT_MAX", "0"),
+            _ => ("ULONG_MAX", "0"),
+        };
+        let (s0, e0, s1) = (
+            self.expr(bounds[0])?,
+            self.expr(bounds[1])?,
+            self.expr(bounds[2])?,
+        );
+        let (l, en, st, dn) = (
+            format!("l{local}"),
+            format!("fe{local}"),
+            format!("fs{local}"),
+            format!("fd{local}"),
+        );
+        self.line("{");
+        self.depth += 1;
+        self.line(&format!("{c} {en} = {e0};"));
+        self.line(&format!("{c} {st} = {s1};"));
+        self.line(&format!("int {dn} = 0;"));
+        let (cond, stop) = if signed {
+            (
+                format!("({st} > 0 ? {l} < {en} : {l} > {en})"),
+                format!("({st} > 0 ? {l} > {max} - {st} : {l} < {min} - {st})"),
+            )
+        } else {
+            (format!("{l} < {en}"), format!("{l} > {max} - {st}"))
+        };
+        let head = format!(
+            "for ({l} = {s0}; {dn} == 0 && {cond}; {dn} = {stop}, {l} = ({c})(({u}){l} + ({u}){st})) {{"
+        );
+        self.nested(&head, body)?;
+        self.depth -= 1;
+        self.line("}");
+        Ok(())
+    }
+
     fn stmt(&mut self, s: &Stmt) -> Result<(), LowerError> {
         match s {
             Stmt::Let { local, init } | Stmt::Assign { local, value: init } => {
@@ -325,6 +394,13 @@ impl Em<'_> {
                 let c = self.expr(cond)?;
                 self.nested(&format!("while (({c}) != 0) {{"), body)?;
             }
+            Stmt::For {
+                local,
+                start,
+                end,
+                step,
+                body,
+            } => self.for_loop(*local, [start, end, step], body)?,
             Stmt::Break => self.line("break;"),
             Stmt::Continue => self.line("continue;"),
             Stmt::Return => self.line("return;"),
@@ -435,7 +511,6 @@ fn stmt_name(s: &Stmt) -> &'static str {
     match s {
         Stmt::MaskedLoad { .. } => "MaskedLoad",
         Stmt::MaskedStore { .. } => "MaskedStore",
-        Stmt::For { .. } => "For",
         Stmt::MulticastLoadReduce { .. } => "MulticastLoadReduce",
         Stmt::Fence { .. } => "Fence",
         Stmt::Collective { .. } => "Collective",
