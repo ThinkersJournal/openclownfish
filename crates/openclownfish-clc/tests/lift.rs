@@ -1,10 +1,10 @@
 //! OpenCL C source lifted into Unpopped's IR, and round-tripped to the emitter.
 
 use openclownfish_clc::{OPENCL_C, OpenClC};
-use unpopped::convert::{lift_elementwise, lift_reduction};
 use unpopped::generate;
 use unpopped::ir::{BinaryOp, OpDef, ReduceOp, UnaryOp, input, konst};
 use unpopped::lift::LiftError;
+use unpopped_convert::{lift_elementwise, lift_reduction};
 use unpopped_vocab::{ArchSku, ElementKind, OpCategory, OperandDesc, structure_key};
 
 const F32: &[ElementKind] = &[ElementKind::F32];

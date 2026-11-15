@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0
+
+- **Breaking**: dependencies `unpopped` and `unpopped-vocab` 0.45.17 to 0.47.0. Who is affected: anyone who builds `openclownfish-clc` with the `parse` feature alongside their own `unpopped` (the Unpopped types it exposes are 0.47.0 now), and anyone who stores `structure_key` tokens (the schema is sk8; sk7 tokens decline; nothing in this repository stores one). The `convert` feature of `unpopped` is now the separate crate `unpopped-convert` 0.47.0, which the `parse` feature depends on. Migration: pin `unpopped`, `unpopped-vocab` and `unpopped-convert` to 0.47.0, replace `unpopped::convert::` with `unpopped_convert::`, regenerate any stored `structure_key`. 0.46 made `Stmt::For` carry an unroll hint; the kernel-IR emitter still declines `For`. No emitter change.
+- Tests: the whole device suite (32 suites, 78 tests) passes on 3 devices against the 0.47.0 oracle.
+
 ## 0.0.50
 
 - Emitter: `Backend::lower_kernel` for the statement IR, a small subset. Integer kernels (`I32`, `U32`, `I64`, `U64`) with a launch shape, rank-1 buffers, scalar arguments, `Shared` arrays of static extent, `Let`/`Assign`/`Load`/`Store`, `If`/`While`/`Break`/`Continue`/`Return`, a block barrier, and `AtomicRmw` (`Add`, `Max`, `Min`, `And`, `Or`, `Xor`, `Exchange`) and `AtomicCas`, spelled as the OpenCL C 2.0 `atomic_fetch_*_explicit`, `atomic_exchange_explicit` and `atomic_compare_exchange_strong_explicit` (scope `Block` is `memory_scope_work_group`, `Device` is `memory_scope_device`). The atomics are opt-in with `OpenClC::with_c20_atomics(true)` and need `-cl-std=CL2.0` on a device that reports OpenCL C 2.0. Declined by name: float and 16-bit elements, the cluster-peer, peer and multicast places, subgroup, cluster and system scopes, `For`, collectives, async copies, MMA, calls, and everything else not listed. Out-of-bounds accesses are not trapped (a precondition).
