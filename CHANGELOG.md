@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Emitter: `Backend::lower_kernel` now spells `Stmt::For` (integer counter and bounds, `I32`, `U32`, `I64`, `U64`). It matches the oracle: bounds read once, the direction from the sign of the step, and a stop instead of a wrap when the next counter would leave the type; the advance is in the `for` header so `Continue` takes it, done in the unsigned type so signed counters never overflow in C. A zero step is a caller precondition. 0.47.0's `Stmt::For` carries no unroll hint, so no `#pragma unroll` is written. Patent: no new search; the change adds no atomics, execution units, address routing or full/empty-bit lock, so the PS1 read of 2026-11-14 is unchanged.
+- Tests: `device_agrees_for.rs` runs 36 kernels on 3 devices (plain, `Continue` and `Break`, nested; four integer types; ordinary, empty, negative-step, large-step and near-limit ranges) against the interpreter. A mutant that drops the limit stop hangs the device instead of failing.
+
 ## 0.1.0
 
 - **Breaking**: dependencies `unpopped` and `unpopped-vocab` 0.45.17 to 0.47.0. Who is affected: anyone who builds `openclownfish-clc` with the `parse` feature alongside their own `unpopped` (the Unpopped types it exposes are 0.47.0 now), and anyone who stores `structure_key` tokens (the schema is sk8; sk7 tokens decline; nothing in this repository stores one). The `convert` feature of `unpopped` is now the separate crate `unpopped-convert` 0.47.0, which the `parse` feature depends on. Migration: pin `unpopped`, `unpopped-vocab` and `unpopped-convert` to 0.47.0, replace `unpopped::convert::` with `unpopped_convert::`, regenerate any stored `structure_key`. 0.46 made `Stmt::For` carry an unroll hint; the kernel-IR emitter still declines `For`. No emitter change.
