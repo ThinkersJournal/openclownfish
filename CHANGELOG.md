@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 
 - CI: the portfolio workflow pin moves to coderipper `c72a6e0` (CodeRipper 0.47.5). No `.coderipper.toml` and no rule names in this repo, so there is nothing to migrate (the rename tool finds no config; a grep for the 14 old names finds 0 hits, and the same grep finds `skip-rule` nowhere because none is used).
 
