@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! bf16 and f16 elementwise kernels on every device against Unpopped's oracle.
 //!
 //! Both are stored as a 16-bit pattern and computed in `float`; neither needs

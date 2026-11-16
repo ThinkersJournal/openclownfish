@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The block-reduce variant of `ArgMax` and `ArgMin` on every device, at three block sizes: the
 //! kernel, Unpopped's oracle and an independent host fold written here from the rule must all
 //! give the same indices. The reduced extents are 6 and 36, so some blocks leave work items with

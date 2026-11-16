@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Serial per-output reductions on every device against Unpopped's oracle.
 //!
 //! Arguments follow Baracuda's general reduction nest: the input and output

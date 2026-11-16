@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared by the device differentials: the narrow integer dtypes' test data
 //! and element widths.
 
@@ -37,7 +38,10 @@ pub fn pool(d: ElementKind) -> [i64; 9] {
 
 /// `shape`'s worth of `d` data cycling through [`pool`], or `None` for a dtype
 /// that is not narrow.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared by several test binaries; each compiles this module and uses a subset"
+)]
 pub fn narrow_buffer(d: ElementKind, shape: &[i64]) -> Option<TypedBuffer> {
     if !NARROW.contains(&d) {
         return None;
@@ -66,7 +70,10 @@ pub fn narrow_buffer(d: ElementKind, shape: &[i64]) -> Option<TypedBuffer> {
 }
 
 /// A narrow-dtype buffer of the given values (each already inside the type's range).
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared by several test binaries; each compiles this module and uses a subset"
+)]
 pub fn narrow_from(d: ElementKind, shape: &[i64], vals: &[i64]) -> TypedBuffer {
     match d {
         ElementKind::I8 => {
@@ -90,7 +97,10 @@ pub fn narrow_from(d: ElementKind, shape: &[i64], vals: &[i64]) -> TypedBuffer {
 }
 
 /// The little-endian bytes of `vals` at `d`'s width.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared by several test binaries; each compiles this module and uses a subset"
+)]
 pub fn narrow_bytes(d: ElementKind, vals: &[i64]) -> Vec<u8> {
     let w = width(d);
     vals.iter()

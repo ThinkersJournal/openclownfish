@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The native `f16` path (`cl_khr_fp16`, `OpenClC::with_native_half`) on every device that
 //! lists the extension, against both Unpopped's oracle and the integer codec on the same device.
 //!

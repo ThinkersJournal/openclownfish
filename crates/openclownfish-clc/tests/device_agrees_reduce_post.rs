@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fused reduction post-expressions on every device against Unpopped's oracle,
 //! through both the serial kernel and the block-reduce variant (block sizes 8
 //! and 32). The post sees the finalized fold (after `Mean`'s division) as
@@ -203,7 +204,10 @@ fn ulp_distance(a: &[u8], b: &[u8]) -> u64 {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a test helper taking the whole launch description; a struct would only rename the arguments"
+)]
 fn run(
     ctx: &Context,
     queue: &Queue,

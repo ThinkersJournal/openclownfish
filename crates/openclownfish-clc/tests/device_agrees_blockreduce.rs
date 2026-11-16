@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The block-reduce variant on every device: against Unpopped's oracle, and
 //! (for Max/Min over NaNs and signed zeros, and empty extents) bit for bit
 //! against the serial kernel on the same device. One work-group per output
@@ -182,7 +183,10 @@ fn width(d: ElementKind) -> usize {
 
 /// Builds `source` with `opts`, runs `name` over `inp` and returns the output bytes.
 /// `block` is `Some(B)` for a work-group-per-output launch, `None` for serial.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a test helper taking the whole launch description; a struct would only rename the arguments"
+)]
 fn run(
     ctx: &Context,
     queue: &Queue,

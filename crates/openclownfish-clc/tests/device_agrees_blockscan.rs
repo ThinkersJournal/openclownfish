@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The block-scan variant on every device against Unpopped's oracle, at block
 //! sizes 8 and 32 so rows longer than a block exercise the chunk carry. One
 //! work-group per row.

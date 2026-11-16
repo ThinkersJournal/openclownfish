@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! OpenCL C source to Unpopped IR: a `Frontend` over the C grammar.
 
 use tree_sitter::{Parser, Tree};

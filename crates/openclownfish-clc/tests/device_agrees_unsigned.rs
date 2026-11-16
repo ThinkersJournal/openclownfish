@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! u32 and u64 kernels on every device: elementwise, serial reductions and serial
 //! scans, byte for byte against Unpopped's oracle (the oracle covers both from
 //! 0.40.19).

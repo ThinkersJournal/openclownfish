@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! OpenCL C source lifted into Unpopped's IR, and round-tripped to the emitter.
 
 use openclownfish_clc::{OPENCL_C, OpenClC};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Which OpenCL drivers the system says are installed, read without calling
 //! OpenCL.
 //!

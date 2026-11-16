@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Serial per-row scans on every device against Unpopped's oracle.
 //!
 //! Arguments follow Baracuda's scan convention: the input and output pointers,

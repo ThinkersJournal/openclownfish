@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! OpenCL C reductions and scans: lifted into Unpopped's IR, emitted again, and
 //! run on every device against the original source kernel run as written.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A kernel-layer [`KernelFn`] spelled as an OpenCL C kernel: the statement-IR path
 //! (`Backend::lower_kernel`), a deliberately small subset.
 //!

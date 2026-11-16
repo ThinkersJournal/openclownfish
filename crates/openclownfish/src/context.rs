@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Contexts, command queues and buffers.
 
 use std::ffi::c_void;

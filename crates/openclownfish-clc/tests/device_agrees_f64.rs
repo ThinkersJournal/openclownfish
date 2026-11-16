@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The f64 emitter on every device that lists `cl_khr_fp64`, against Unpopped's
 //! f64 oracle. Devices without the extension are reported and counted, and the
 //! emitter's refusal for them is checked: f64 must be a typed refusal, never a

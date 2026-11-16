@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- Governance, no behaviour change: SPDX header on every `.rs` file, a reason on each `allow()` (GOV-010), and `docs/PATENT-SWEEP.md` recording which patents were actually searched (PS1, board 431 and 441) and which were not.
+
 ## 0.1.3
 
 - CI: the portfolio workflow pin moves to coderipper `c72a6e0` (CodeRipper 0.47.5). No `.coderipper.toml` and no rule names in this repo, so there is nothing to migrate (the rename tool finds no config; a grep for the 14 old names finds 0 hits, and the same grep finds `skip-rule` nowhere because none is used).

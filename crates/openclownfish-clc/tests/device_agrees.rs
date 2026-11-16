@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Emit OpenCL C, build and run it on every device here, and compare with
 //! Unpopped's independent f64 oracle. The output buffer starts as NaN so a
 //! kernel that never wrote is told apart from one that wrote a wrong value.

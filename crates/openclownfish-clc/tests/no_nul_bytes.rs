@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! No tracked text file may contain a raw NUL byte. Editing tooling can turn a
 //! backslash-zero escape into a real NUL that still compiles, so scan the index.
 

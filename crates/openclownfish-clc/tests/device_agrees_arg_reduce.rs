@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `ArgMax` and `ArgMin` on every device: the kernel, Unpopped's oracle and an independent
 //! host fold written here from the rule must all give the same indices.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The strided schedule on every device: transposed, broadcast and rank-3
 //! operands, plus a `Coord` body, against Unpopped's oracle.
 //!
