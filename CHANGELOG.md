@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- CI: the portfolio workflow pin moves to coderipper `c72a6e0` (CodeRipper 0.47.5). No `.coderipper.toml` and no rule names in this repo, so there is nothing to migrate (the rename tool finds no config; a grep for the 14 old names finds 0 hits, and the same grep finds `skip-rule` nowhere because none is used).
+
 ## 0.1.2
 
 - Emitter: `Backend::lower_kernel` now spells `F32` and `F64` kernels: float buffers, scalars, locals and `Shared` arrays; `Const`, `Add`, `Sub`, `Mul`, `Neg`, `Fma`, the six comparisons, and `Div` on `F64`. `F64` needs `OpenClC::with_fp64`. `#pragma OPENCL FP_CONTRACT OFF` is written. An `F32` statement follows the oracle (evaluated at `f64`, rounded once per statement): with `with_fp64` the leaves are widened to `double`; without it a statement may hold one rounding operation and a constant that is exactly an `f32`, and anything else is declined by name. Declined by name: float atomics (unchanged), float `Max`/`Min`, a cast from a float, the transcendental unary ops, `Select`, `F16`/`Bf16`, and `F32` `Div` (NVIDIA's float division is 1 ULP off the oracle, also when written at `double`; recorded in `docs/device-reports.md`).
