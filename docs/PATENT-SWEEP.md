@@ -76,4 +76,4 @@ Version line 0.1 (0.1.0 repin, 0.1.1 integer `For`, 0.1.2 F32/F64 kernels, 0.1.3
 
 ### 0.1.6 - 2026-11-16
 
-Patent search of ideas 1 (safe wrapper) and 10 (ICD and registry reading, run-time loading), ten queries total with the control above; hits 8 to 15 read at their independent claims, all clear as read. No code change.
+Patent search of ideas 1 (safe wrapper) and 10 (ICD and registry reading, run-time loading), five queries (Q5, Q7 to Q10) and one read-through step (Q6), with the control above; nine patents (hits 8 to 15) read at their independent claims, all clear as read. No code change.

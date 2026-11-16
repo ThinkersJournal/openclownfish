@@ -2,7 +2,7 @@
 
 ## 0.1.6
 
-- Docs only: `docs/PATENT-SWEEP.md` now records a search of the two ideas the published crates rest on (a safe wrapper over a vendor OpenCL runtime; reading ICD and registry registrations and loading the library at run time with each entry point an `Option`): six queries with a control, 8 patents read at their independent claims, all clear as read, with the limits of the search stated. A null is not clearance. No code change. (0.1.5 is the README and manifest PR, #57.)
+- Docs only: `docs/PATENT-SWEEP.md` now records a search of the two ideas the published crates rest on (a safe wrapper over a vendor OpenCL runtime; reading ICD and registry registrations and loading the library at run time with each entry point an `Option`): five queries and a read-through step, with a control, nine patents read at their independent claims, all clear as read, with the limits of the search stated. A null is not clearance. No code change. (0.1.5 is the README and manifest PR, #57.)
 
 ## 0.1.4
 
