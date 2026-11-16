@@ -1,0 +1,14 @@
+# openclownfish-clc
+
+OpenCL C emitter and parser for Unpopped. **Not published** (`publish = false`); it follows Unpopped's releases. Nothing here needs an OpenCL install to build; the device tests need a device and run where one exists.
+
+## Declined by name
+
+The kernel-IR emitter (`lower_kernel`) refuses these with a typed `LowerError::UnsupportedKernel` that names the statement. It never lowers them to a hardware operation.
+
+- **Mbarrier statements: `MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait`, `CopyBulk` (on an mbarrier).** NVIDIA US11803380B2. OpenCL C is vendor-neutral: an emitter that is not NVIDIA-specific could infringe by lowering these to hardware operations, so this one lowers none (CireSnave 2026-11-16: "we consider ourselves not infringing"). Not a clearance, not legal advice. Unpopped 0.47.0 has no such statements yet; a later one is refused by name from its `Debug` variant name.
+- **Async and collective statements: `AsyncWait`, `CopyAsync`, `AsyncCommit`, `Collective`, `CollectiveTuple`.** NVIDIA US12118382B2, US11294713B2 and US8539204B2.
+- **Floating-point atomics, 16-bit atomics and `F32` `Div`**: declined for correctness or risk reasons recorded in `ROADMAP.md` (X2, PS1) and `docs/device-reports.md`.
+- `WgmmaWait` is on hold and falls under the generic refusal.
+
+`docs/PATENT-SWEEP.md` records what was searched and what was not. A refusal here is a design choice, not a clearance.

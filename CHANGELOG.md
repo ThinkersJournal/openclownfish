@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Emitter: `lower_kernel` declines the mbarrier statements `MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait` and `CopyBulk` by name, with a typed `UnsupportedKernel` error that cites NVIDIA US11803380B2 (CireSnave 2026-11-16: do not lower them to hardware operations from a vendor-neutral emitter). The name is read from the statement's `Debug` output because Unpopped 0.47.0 has no such statement yet, so a later Unpopped that adds them is refused by name with no code change. `WgmmaWait` stays on hold. Tests: the matcher accepts each declined name in unit, struct and tuple form and does not sweep up similar names, `WgmmaWait` or `CopyAsync` (a prefix-match mutant fails it). The declined list is in `docs/PATENT-SWEEP.md` and the new `crates/openclownfish-clc/README.md`. Not a clearance.
+
 ## 0.1.6
 
 - Docs only: `docs/PATENT-SWEEP.md` now records a search of the two ideas the published crates rest on (a safe wrapper over a vendor OpenCL runtime; reading ICD and registry registrations and loading the library at run time with each entry point an `Option`): five queries and a read-through step, with a control, nine patents read at their independent claims, all clear as read, with the limits of the search stated. A null is not clearance. No code change. (0.1.5 is the README and manifest PR, #57.)

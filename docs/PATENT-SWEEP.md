@@ -61,6 +61,18 @@ Control for Q1 and Q2: the same searches returned US8624916B2, US7627723B1, US11
 | 14 | US7080247B2 | EVGA (Expired per Google, est. 2021) | independent claims 1, 5, 9 read: **identify the motherboard chipset, remove all installed display driver files, install new ones** | display driver registry handling | we read registrations and install, remove and modify nothing | clear as read |
 | 15 | US20030005176A1 | Intel (Expired - Fee Related per Google) | claim 1 read: compare the memory location of two kinds of **bus configuration information** for a device and select one | a search hit for a diagnostic of a driver that failed to load; the claim does not read that way | we read no bus configuration | clear as read |
 
+## Declined by name (not searched)
+
+Statements this emitter refuses with a typed `LowerError::UnsupportedKernel` that names them, so it never lowers them to a hardware operation. A decline is a design choice, not a search and not a clearance: no claim of the patents below was read by this lane for this entry.
+
+| Statement(s) | Why declined | Source | Where |
+|---|---|---|---|
+| `MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait`, `CopyBulk` (on an mbarrier) | NVIDIA US11803380B2 (mbarrier hardware operations). OpenCL C is vendor-neutral, so a lowering here could not be NVIDIA-specific; if a non-NVIDIA-specific emitter lowered them to hardware operations it could infringe. CireSnave 2026-11-16 (relayed by the PM, verbatim): "For that patent, we add a note about the potential for infringement if non-Nvidia-specific emitters lower those operations to hardware ops and we ensure our projects' emitters for other manufacturers' hardware know about that and we consider ourselves not infringing." | PM [NOTICE] patent-barrier-statements, 2026-11-16 | `crates/openclownfish-clc/src/kernel.rs` (`MBARRIER_DECLINED`, `mbarrier_declined`, tests `each_mbarrier_statement_is_declined_by_name` and `other_statements_are_not_swept_up`) |
+| `AsyncWait`, `CopyAsync`, `AsyncCommit`, `Collective`, `CollectiveTuple` | NVIDIA US12118382B2, US11294713B2, US8539204B2 (idea 7 and hit 3 above) | board 431 | `stmt_name` in `kernel.rs`; the parser refuses the OpenCL names in `RESIDUE` |
+| `WgmmaWait` | on hold (PM 2026-11-16) | PM [NOTICE] | not declined by this entry yet; falls under the generic "a statement this emitter has not been taught" refusal |
+
+Unpopped 0.47.0 has no `Mbar*` or `CopyBulk` statement, so today nothing reaches the mbarrier refusal; it reads the variant name from the statement's `Debug` output so a later Unpopped that adds them is refused by name without a code change here. The tests prove the matcher (declined names, and that similar names and `WgmmaWait` are not swept up), not a real statement.
+
 ## Needs review (to the PM)
 
 None from what was read, including hits 8 to 15 (all clear on the independent claims as read; only US9348676B2 is listed Active by Google, and its claims need a download script and OpenCL parallel contexts, which this crate has neither of). The ideas marked "none searched, named unread" are not clear: they are unread.

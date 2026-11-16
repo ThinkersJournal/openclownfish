@@ -54,6 +54,14 @@
 //! builds a lowering with execution units, address routing or an emulated full/empty bit owns
 //! that risk. See the PS1 row of `ROADMAP.md`.
 //!
+//! # Declined by name: mbarrier statements
+//!
+//! `MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait` and `CopyBulk` (on an mbarrier) are
+//! refused with a typed [`LowerError::UnsupportedKernel`] that names the statement and NVIDIA
+//! US11803380B2. OpenCL C is vendor-neutral: if a non-NVIDIA-specific emitter lowered these to
+//! hardware operations it could infringe, so this one lowers none of them (CireSnave
+//! 2026-11-16: "we consider ourselves not infringing"). Not a clearance; not legal advice.
+//!
 //! # The kernel
 //!
 //! `__kernel void NAME(args)` in `KernelFn::params` order: a buffer is `__global T* bI` (`const`
@@ -621,7 +629,15 @@ impl Em<'_> {
                 self.depth -= 1;
                 self.line("}");
             }
-            other => return Err(refuse(format!("the statement {}", stmt_name(other)))),
+            other => {
+                if let Some(name) = mbarrier_declined(&format!("{other:?}")) {
+                    return Err(refuse(format!(
+                        "the statement {name}: declined by name. NVIDIA US11803380B2 covers mbarrier \
+                         hardware operations; OpenCL C is vendor-neutral and this emitter lowers none of them"
+                    )));
+                }
+                return Err(refuse(format!("the statement {}", stmt_name(other))));
+            }
         }
         Ok(())
     }
@@ -646,6 +662,29 @@ fn place_name(p: &Place) -> &'static str {
         Place::Multicast { .. } => "Multicast",
         _ => "an unknown place",
     }
+}
+
+/// The mbarrier statements this emitter declines by name (CireSnave 2026-11-16, board item on
+/// NVIDIA US11803380B2: "we consider ourselves not infringing" by never lowering them to
+/// hardware operations from a vendor-neutral emitter). `WgmmaWait` is on hold and not listed.
+const MBARRIER_DECLINED: &[&str] = &[
+    "MbarInit",
+    "MbarArrive",
+    "MbarCompleteTx",
+    "MbarWait",
+    "CopyBulk",
+];
+
+/// The declined statement a `Debug` rendering names, if any. It reads the leading identifier of
+/// `format!("{stmt:?}")`, which a derived `Debug` makes the variant name, so a statement Unpopped
+/// adds later is caught by name without this crate naming the variant (Unpopped 0.47.0 has none
+/// of them yet).
+fn mbarrier_declined(debug: &str) -> Option<&'static str> {
+    let head = debug
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .next()
+        .unwrap_or("");
+    MBARRIER_DECLINED.iter().copied().find(|n| *n == head)
 }
 
 fn stmt_name(s: &Stmt) -> &'static str {
@@ -787,4 +826,44 @@ pub(crate) fn lower_kernel(oc: &OpenClC, k: &KernelFn) -> Result<GeneratedKernel
     s.push_str(&em.out);
     s.push_str("}\n");
     Ok(GeneratedKernel::new(k.name.clone(), s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MBARRIER_DECLINED, mbarrier_declined};
+
+    #[test]
+    fn each_mbarrier_statement_is_declined_by_name() {
+        // A derived `Debug` prints the variant name first, whatever its fields.
+        for name in MBARRIER_DECLINED {
+            assert_eq!(mbarrier_declined(name), Some(*name), "unit form");
+            assert_eq!(
+                mbarrier_declined(&format!("{name} {{ barrier: 0, count: 1 }}")),
+                Some(*name),
+                "struct form"
+            );
+            assert_eq!(
+                mbarrier_declined(&format!("{name}(7)")),
+                Some(*name),
+                "tuple form"
+            );
+        }
+        assert_eq!(MBARRIER_DECLINED.len(), 5);
+    }
+
+    #[test]
+    fn other_statements_are_not_swept_up() {
+        // Control: the matcher is not "always Some". Similar names and held statements pass.
+        for other in [
+            "CopyAsync { dst: 0 }",
+            "AsyncWait { n: 0 }",
+            "WgmmaWait { n: 0 }",
+            "MbarInitX { a: 1 }",
+            "CopyBulkExtra",
+            "Let { local: 0 }",
+            "",
+        ] {
+            assert_eq!(mbarrier_declined(other), None, "{other}");
+        }
+    }
 }
