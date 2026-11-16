@@ -4,6 +4,10 @@
 //! Start with [`Runtime::load`], then [`Runtime::platforms`] and
 //! [`Platform::devices`]. Nothing here needs an OpenCL install to build.
 
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 mod context;
 mod program;
 
