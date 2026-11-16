@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `Backend::lower_kernel` for `Stmt::For`, on every OpenCL device here, against Unpopped's
 //! launch interpreter (`run_launch`).
 //!

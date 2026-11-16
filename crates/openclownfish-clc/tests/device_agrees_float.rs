@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `Backend::lower_kernel` for `F32` and `F64` kernels, on every OpenCL device here, against
 //! Unpopped's launch interpreter (`run_launch`).
 //!

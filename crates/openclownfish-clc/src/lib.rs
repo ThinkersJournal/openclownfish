@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! OpenCL C emitter for [Unpopped](https://crates.io/crates/unpopped).
 //!
 //! [`OpenClC`] implements `unpopped::backend::Backend`. It is narrow on
@@ -511,7 +512,10 @@ fn expr(e: &ScalarExpr, cx: Cx<'_>) -> Result<String, LowerError> {
         ScalarExpr::Input(i) => return Err(refuse(format!("input {i} out of range"))),
         ScalarExpr::Const(c) => {
             if t.c == "float" {
-                #[allow(clippy::cast_possible_truncation)]
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "checked on the next lines: a constant that does not round-trip through f32 is refused"
+                )]
                 let f = *c as f32;
                 if !f.is_finite() || f64::from(f) != *c {
                     return Err(refuse(format!(
@@ -690,7 +694,10 @@ fn half_value(e: &ScalarExpr, cx: Cx<'_>) -> Result<Hv, LowerError> {
         ScalarExpr::Input(i) if *i < n_inputs => Hv::pattern(input_leaf(*i, cx), fmt),
         ScalarExpr::Input(i) => return Err(refuse(format!("input {i} out of range"))),
         ScalarExpr::Const(c) => {
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "checked on the next line: a constant that does not round-trip through f32 is refused"
+            )]
             let f = *c as f32;
             if f64::from(f) != *c || !half_exact(f, fmt) {
                 return Err(refuse(format!(

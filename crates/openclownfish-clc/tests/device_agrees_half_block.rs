@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! bf16 and f16 block-reduce and block-scan variants on every device against Unpopped's oracle.
 //!
 //! The data is quarters, halves, ones and twos, so every sum, product and prefix is exact in

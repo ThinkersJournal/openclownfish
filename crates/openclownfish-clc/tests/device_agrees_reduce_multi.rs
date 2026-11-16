@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reductions over two inputs (dot product, weighted Max/Min, a dot with a fused
 //! post-expression) on every device against Unpopped's oracle, through the
 //! serial kernel and the block-reduce variant (block sizes 8 and 32).
@@ -189,7 +190,10 @@ fn opdef_for(c: &Case) -> OpDef {
     op
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a test helper taking the whole launch description; a struct would only rename the arguments"
+)]
 fn run(
     ctx: &Context,
     queue: &Queue,

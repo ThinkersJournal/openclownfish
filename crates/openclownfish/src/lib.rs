@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Safe Rust interface to OpenCL, loaded at run time.
 //!
 //! Start with [`Runtime::load`], then [`Runtime::platforms`] and

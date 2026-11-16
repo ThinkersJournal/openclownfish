@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! i32 and i64 kernels on every device against Unpopped's oracle, byte for byte.
 //!
 //! The inputs are the integers where wrapping, sign and shifts go wrong: the

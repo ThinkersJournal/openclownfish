@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The block-reduce variant of `And`, `Or`, `Xor`, `MaxNum` and `MinNum` on every device
 //! against Unpopped's oracle, at three block sizes (the extents here are 5 to 60 elements, so
 //! some blocks hold one chunk item and some leave work items with an empty chunk).

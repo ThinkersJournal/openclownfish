@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Runtime loader for the OpenCL ICD library.
 //!
 //! Types, constants and function-pointer signatures come from the

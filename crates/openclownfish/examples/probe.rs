@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Print every OpenCL platform and device this machine exposes.
 use openclownfish::{Error, Runtime, icd};
 

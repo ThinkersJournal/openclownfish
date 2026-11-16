@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integer `Div`, `Rem`, comparison, `Select` and `ConstInt` on every device (E16).
 //!
 //! `docs/int-div-shift-semantics.md` in Unpopped is the single source: a zero divisor gives the

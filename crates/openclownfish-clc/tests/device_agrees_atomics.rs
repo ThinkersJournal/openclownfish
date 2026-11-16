@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `Backend::lower_kernel` for the statement IR: the OpenCL C 2.0 atomics on every device that
 //! reports OpenCL C 2.0, against Unpopped's launch interpreter (`run_launch`).
 //!

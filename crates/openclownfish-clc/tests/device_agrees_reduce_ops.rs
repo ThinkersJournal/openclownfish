@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `And`, `Or`, `Xor`, `MaxNum` and `MinNum` serial reductions on every device against
 //! Unpopped's oracle, byte for byte.
 //!

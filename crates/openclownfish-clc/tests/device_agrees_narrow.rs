@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! i8, u8, i16 and u16 elementwise kernels on every device against Unpopped's
 //! oracle, byte for byte.
 //!
