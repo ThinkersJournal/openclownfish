@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- Docs only: `docs/PATENT-SWEEP.md` now records a search of the two ideas the published crates rest on (a safe wrapper over a vendor OpenCL runtime; reading ICD and registry registrations and loading the library at run time with each entry point an `Option`): six queries with a control, 8 patents read at their independent claims, all clear as read, with the limits of the search stated. A null is not clearance. No code change. (0.1.5 is the README and manifest PR, #57.)
+
 ## 0.1.4
 
 - Governance, no behaviour change: SPDX header on every `.rs` file, a reason on each `allow()` (GOV-010), and `docs/PATENT-SWEEP.md` recording which patents were actually searched (PS1, board 431 and 441) and which were not.
