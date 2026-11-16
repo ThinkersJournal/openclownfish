@@ -56,7 +56,8 @@
 //!
 //! # Declined by name: mbarrier statements
 //!
-//! `MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait` and `CopyBulk` (on an mbarrier) are
+//! `MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait`, `CopyBulk` (on an mbarrier) and `Tcgen05Commit` (it arrives on an
+//! mbarrier) are
 //! refused with a typed [`LowerError::UnsupportedKernel`] that names the statement and NVIDIA
 //! US11803380B2. OpenCL C is vendor-neutral: if a non-NVIDIA-specific emitter lowered these to
 //! hardware operations it could infringe, so this one lowers none of them (CireSnave
@@ -667,12 +668,18 @@ fn place_name(p: &Place) -> &'static str {
 /// The mbarrier statements this emitter declines by name (CireSnave 2026-11-16, board item on
 /// NVIDIA US11803380B2: "we consider ourselves not infringing" by never lowering them to
 /// hardware operations from a vendor-neutral emitter). `WgmmaWait` is on hold and not listed.
+///
+/// **TEMPORARY.** Matching a `Debug` string is brittle: a variant rename or a `Debug` change
+/// silently stops it. Replace it with an exhaustive `match` arm over the real `Stmt` variants,
+/// with tests that build real statements, at the repin to the first Unpopped version that
+/// contains them (owed; see `HANDOFF.md`, PM 2026-11-16).
 const MBARRIER_DECLINED: &[&str] = &[
     "MbarInit",
     "MbarArrive",
     "MbarCompleteTx",
     "MbarWait",
     "CopyBulk",
+    "Tcgen05Commit",
 ];
 
 /// The declined statement a `Debug` rendering names, if any. It reads the leading identifier of
@@ -848,7 +855,7 @@ mod tests {
                 "tuple form"
             );
         }
-        assert_eq!(MBARRIER_DECLINED.len(), 5);
+        assert_eq!(MBARRIER_DECLINED.len(), 6);
     }
 
     #[test]
