@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+rust-version = "1.88"
+readme = "README.md"
 keywords = ["opencl", "gpu", "ffi", "loader"]
 categories = ["api-bindings", "external-ffi-bindings"]
 

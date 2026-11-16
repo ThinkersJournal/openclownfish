@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Docs and manifests for the first real publish of `openclownfish` and `openclownfish-sys`: a README in each crate (`readme =` set, so it is packaged) stating where they were tested and where not (Windows 11 laptop, 3 devices named; macOS runner reports no devices, -30; Linux and the desktop rig unverified; Windows and Linux only), the root README replaced to match, `rust-version = "1.88"` (measured: `libloading` 0.9.0 requires 1.88, and both crates check on 1.88.0 and 1.98.0, not on 1.87.0), and a `CHANGELOG.md` in each crate. The `openclownfish` README example is compiled as a doctest. No code change.
+
 ## 0.1.4
 
 - Governance, no behaviour change: SPDX header on every `.rs` file, a reason on each `allow()` (GOV-010), and `docs/PATENT-SWEEP.md` recording which patents were actually searched (PS1, board 431 and 441) and which were not.
