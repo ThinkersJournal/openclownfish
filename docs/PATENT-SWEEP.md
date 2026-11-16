@@ -63,7 +63,7 @@ Control for Q1 and Q2: the same searches returned US8624916B2, US7627723B1, US11
 
 ## Declined by name (not searched)
 
-Statements this emitter refuses with a typed `LowerError::UnsupportedKernel` that names them, so it never lowers them to a hardware operation. A decline is a design choice, not a search and not a clearance: no claim of the patents below was read by this lane for this entry.
+Statements this emitter refuses with a typed `LowerError::UnsupportedKernel` that names them, so it never lowers them to a hardware operation. A decline is a design choice, not a search and not a clearance: no claim of the patents below was read by this lane for this entry; `Tcgen05Commit` is cited as an extension of US11803380B2 per the PM and was not read separately.
 
 | Statement(s) | Why declined | Source | Where |
 |---|---|---|---|

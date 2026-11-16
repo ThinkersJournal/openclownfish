@@ -669,7 +669,8 @@ fn place_name(p: &Place) -> &'static str {
 /// The NVIDIA-patent statements this emitter declines by name, each with its patent (CireSnave
 /// 2026-11-16: "we consider ourselves not infringing" by never lowering them to hardware
 /// operations from a vendor-neutral emitter, and by telling non-NVIDIA emitter builders not to).
-/// `US11803380B2` covers mbarrier operations (`Tcgen05Commit` arrives on an mbarrier);
+/// `US11803380B2` covers mbarrier operations (`Tcgen05Commit` arrives on an mbarrier and is cited
+/// as an extension of it per the PM, not read separately);
 /// `US12204897B2` (continuation `US12710961B2`) covers a wait on a count of pending
 /// matrix-multiply operations (`WgmmaWait`).
 ///
