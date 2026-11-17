@@ -677,6 +677,8 @@ fn place_name(p: &Place) -> &'static str {
 /// matrix-multiply operations (`WgmmaWait`). An arm over the real `Stmt` variants (Unpopped 0.56.1).
 fn patent_declined(s: &Stmt) -> Option<(&'static str, &'static str)> {
     const MBAR: &str = "US11803380B2";
+    const ASYNC: &str = "US12118382B2 and US11294713B2 (board 434 C)";
+    const COLLECTIVE: &str = "US8539204B2 (board 434 C)";
     match s {
         Stmt::MbarInit { .. } => Some(("MbarInit", MBAR)),
         Stmt::MbarArrive { .. } => Some(("MbarArrive", MBAR)),
@@ -685,6 +687,12 @@ fn patent_declined(s: &Stmt) -> Option<(&'static str, &'static str)> {
         Stmt::CopyBulk { .. } => Some(("CopyBulk", MBAR)),
         Stmt::Tcgen05Commit { .. } => Some(("Tcgen05Commit", MBAR)),
         Stmt::WgmmaWait { .. } => Some(("WgmmaWait", "US12204897B2 (continuation US12710961B2)")),
+        // Board 434 C (CireSnave 2026-11-13): async scheduling and collectives are declined by name.
+        Stmt::CopyAsync { .. } => Some(("CopyAsync", ASYNC)),
+        Stmt::AsyncCommit => Some(("AsyncCommit", ASYNC)),
+        Stmt::AsyncWait { .. } => Some(("AsyncWait", ASYNC)),
+        Stmt::Collective { .. } => Some(("Collective", COLLECTIVE)),
+        Stmt::CollectiveTuple { .. } => Some(("CollectiveTuple", COLLECTIVE)),
         _ => None,
     }
 }
@@ -695,12 +703,7 @@ fn stmt_name(s: &Stmt) -> &'static str {
         Stmt::MaskedStore { .. } => "MaskedStore",
         Stmt::MulticastLoadReduce { .. } => "MulticastLoadReduce",
         Stmt::Fence { .. } => "Fence",
-        Stmt::Collective { .. } => "Collective",
-        Stmt::CollectiveTuple { .. } => "CollectiveTuple",
         Stmt::Mma { .. } => "Mma",
-        Stmt::CopyAsync { .. } => "CopyAsync",
-        Stmt::AsyncCommit => "AsyncCommit",
-        Stmt::AsyncWait { .. } => "AsyncWait",
         Stmt::Call { .. } => "Call",
         Stmt::CallTuple { .. } => "CallTuple",
         Stmt::ExternCall { .. } => "ExternCall",
@@ -833,14 +836,23 @@ pub(crate) fn lower_kernel(oc: &OpenClC, k: &KernelFn) -> Result<GeneratedKernel
 #[cfg(test)]
 mod tests {
     use super::patent_declined;
+    use unpopped::exec::Scope;
     use unpopped::ir::ScalarExpr;
-    use unpopped::kernel::{Place, Stmt};
+    use unpopped::kernel::{CollectiveKind, Place, Stmt, VoteKind};
     use unpopped_vocab::ElementKind;
 
     fn place() -> Place {
         Place::Alloc {
             alloc: 0,
             index: ScalarExpr::ConstInt(0, ElementKind::U32),
+        }
+    }
+    fn collective() -> Stmt {
+        Stmt::Collective {
+            kind: CollectiveKind::Vote(VoteKind::Any),
+            value: n(),
+            result: 0,
+            scope: Scope::Block,
         }
     }
     fn n() -> ScalarExpr {
@@ -889,7 +901,31 @@ mod tests {
             ),
             ("Tcgen05Commit", Stmt::Tcgen05Commit { bar: place() }),
             ("WgmmaWait", Stmt::WgmmaWait { pending: 0 }),
+            ("AsyncCommit", Stmt::AsyncCommit),
+            ("AsyncWait", Stmt::AsyncWait { pending: 0 }),
+            (
+                "CopyAsync",
+                Stmt::CopyAsync {
+                    dst: place(),
+                    src: place(),
+                    elems: 4,
+                    valid: None,
+                    cache: Default::default(),
+                    l2_prefetch: None,
+                },
+            ),
+            ("Collective", collective()),
+            (
+                "CollectiveTuple",
+                Stmt::CollectiveTuple {
+                    kind: CollectiveKind::Vote(VoteKind::All),
+                    values: vec![n()],
+                    results: vec![0],
+                    scope: Scope::Block,
+                },
+            ),
         ];
+        assert_eq!(declined.len(), 12);
         for (name, s) in &declined {
             assert_eq!(patent_declined(s).map(|(n, _)| n), Some(*name));
         }
@@ -911,17 +947,20 @@ mod tests {
             wg.contains("US12204897B2") && wg.contains("US12710961B2"),
             "{wg}"
         );
+        let a = p(&Stmt::AsyncWait { pending: 0 });
+        assert!(
+            a.contains("US12118382B2") && a.contains("US11294713B2") && a.contains("434 C"),
+            "{a}"
+        );
+        assert_eq!(p(&Stmt::AsyncCommit), a);
+        let c = p(&collective());
+        assert!(c.contains("US8539204B2") && c.contains("434 C"), "{c}");
     }
 
     #[test]
     fn other_statements_are_not_swept_up() {
         // Control: the match is not "always Some".
-        for s in [
-            Stmt::AsyncCommit,
-            Stmt::Break,
-            Stmt::WgmmaCommit,
-            Stmt::Return,
-        ] {
+        for s in [Stmt::Break, Stmt::WgmmaCommit, Stmt::Return] {
             assert_eq!(patent_declined(&s), None, "{s:?}");
         }
     }
