@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.1.8
+## 0.2.0
 
-- **Breaking**: dependencies `unpopped`, `unpopped-vocab` and `unpopped-convert` 0.47.0 to 0.56.1 (0.48 to 0.56.0 were never published). Who is affected: anyone who builds `openclownfish-clc` with the `parse` feature alongside their own `unpopped`.
+- **Breaking**: dependencies `unpopped`, `unpopped-vocab` and `unpopped-convert` 0.47.0 to 0.56.1 (0.48 to 0.56.0 were never published). Who is affected: anyone who builds `openclownfish-clc` with the `parse` feature alongside their own `unpopped` (the `parse` feature pulls `unpopped-convert`, which moves with it).
+- Tests: new `tests/declined_nested.rs` lowers kernels with a declined statement bare and nested in `If` (then and else), `For`, `While` and two deep, and checks the by-name error; mutation-checked (disabling the match fails all 4; swallowing the `If` then-block error fails the 2 `If` cases).
 - Emitter: the by-name declines (`MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait`, `CopyBulk`, `Tcgen05Commit`, `WgmmaWait`) are now a `match` over the real `Stmt` variants, replacing the temporary `Debug`-name matcher; tests build real statements. `Stmt::For` carries an `unroll` hint, which is non-semantic and not lowered.
 
 ## 0.1.7
