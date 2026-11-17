@@ -3,6 +3,7 @@
 ## 0.1.7
 
 - Emitter: `lower_kernel` declines the mbarrier statements `MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait`, `CopyBulk`, `Tcgen05Commit` (it arrives on an mbarrier) and, citing NVIDIA US12204897B2 (continuation US12710961B2), `WgmmaWait` by name, with a typed `UnsupportedKernel` error that cites NVIDIA US11803380B2 (CireSnave 2026-11-16: do not lower them to hardware operations from a vendor-neutral emitter). The name is read from the statement's `Debug` output because Unpopped 0.47.0 has no such statement yet, so a later Unpopped that adds them is refused by name with no code change. The `Debug`-name matcher is temporary and to be replaced by an exhaustive match at the repin to the first Unpopped with the variants. Tests: the matcher accepts each declined name in unit, struct and tuple form, each cites its own patent, and it does not sweep up similar names or `CopyAsync` (a prefix-match mutant fails it). The declined list is in `docs/PATENT-SWEEP.md` and the new `crates/openclownfish-clc/README.md`. Not a clearance.
+- Docs: `ROADMAP.md` C2 symbol count corrected to 41 (was 46); the PS1 sentence about `AsyncWait`/`CopyAsync`/`AsyncCommit` now says they appear only in `stmt_name`, which names a refused statement.
 
 ## 0.1.6
 
