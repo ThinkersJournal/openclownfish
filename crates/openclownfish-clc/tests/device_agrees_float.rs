@@ -15,7 +15,7 @@ use unpopped::backend::Backend;
 use unpopped::exec::{ExecId, LaunchShape};
 use unpopped::ir::{BinaryOp, ScalarExpr, UnaryOp};
 use unpopped::kernel::{
-    AtomicOp, Block, BufferRole, KernelFn, LocalDecl, MemoryOrder, Param, Place, Stmt,
+    AtomicOp, Block, BufferRole, KernelFn, LocalDecl, MemoryOrder, Param, Place, Stmt, Unroll,
 };
 use unpopped::oracle::TypedBuffer;
 use unpopped::oracle::kernel_eval::KernelArg;
@@ -120,6 +120,7 @@ fn horner(e: ElementKind) -> KernelFn {
             start: ScalarExpr::ConstInt(0, ElementKind::I32),
             end: ScalarExpr::ConstInt(8, ElementKind::I32),
             step: ScalarExpr::ConstInt(1, ElementKind::I32),
+            unroll: Unroll::None,
             body: Block(vec![Stmt::Assign {
                 local: 2,
                 value: add(mul(local(2), local(0)), local(1)),
