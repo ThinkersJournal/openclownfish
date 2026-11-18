@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- **Breaking**: dependencies `unpopped`, `unpopped-vocab` and `unpopped-convert` 0.47.0 to 0.56.2 (0.48 to 0.56.0 were never published; the repin goes straight to 0.56.2). Who is affected: anyone who builds `openclownfish-clc` with the `parse` feature alongside their own `unpopped` (the `parse` feature pulls `unpopped-convert`, which moves with it).
+- Emitter: `CopyAsync`, `AsyncCommit`, `AsyncWait`, `Collective` and `CollectiveTuple` are now declined by name in a typed `UnsupportedKernel` that cites NVIDIA US12118382B2 and US11294713B2 (async) or US8539204B2 (collectives) and board 434 C (CireSnave 2026-11-13), through `patent_declined`; they no longer fall to the generic refusal. Tests: one per name (unit), and each but `CollectiveTuple` nested end to end in `If`, `While` and `For` inside `If`; mutation-checked per name. Not a clearance.
+- Tests: new `tests/declined_nested.rs` lowers kernels with a declined statement bare and nested in `If` (then and else), `For`, `While` and two deep, and checks the by-name error; mutation-checked (disabling the match fails all 4; swallowing the `If` then-block error fails the 2 `If` cases).
+- Emitter: the by-name declines (`MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait`, `CopyBulk`, `Tcgen05Commit`, `WgmmaWait`) are now a `match` over the real `Stmt` variants, replacing the temporary `Debug`-name matcher; tests build real statements. `Stmt::For` carries an `unroll` hint, which is non-semantic and not lowered.
+
 ## 0.1.7
 
 - Emitter: `lower_kernel` declines the mbarrier statements `MbarInit`, `MbarArrive`, `MbarCompleteTx`, `MbarWait`, `CopyBulk`, `Tcgen05Commit` (it arrives on an mbarrier) and, citing NVIDIA US12204897B2 (continuation US12710961B2), `WgmmaWait` by name, with a typed `UnsupportedKernel` error that cites NVIDIA US11803380B2 (CireSnave 2026-11-16: do not lower them to hardware operations from a vendor-neutral emitter). The name is read from the statement's `Debug` output because Unpopped 0.47.0 has no such statement yet, so a later Unpopped that adds them is refused by name with no code change. The `Debug`-name matcher is temporary and to be replaced by an exhaustive match at the repin to the first Unpopped with the variants. Tests: the matcher accepts each declined name in unit, struct and tuple form, each cites its own patent, and it does not sweep up similar names or `CopyAsync` (a prefix-match mutant fails it). The declined list is in `docs/PATENT-SWEEP.md` and the new `crates/openclownfish-clc/README.md`. Not a clearance.

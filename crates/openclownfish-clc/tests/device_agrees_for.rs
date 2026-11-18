@@ -16,7 +16,7 @@ use openclownfish_clc::OpenClC;
 use unpopped::backend::Backend;
 use unpopped::exec::{ExecId, LaunchShape};
 use unpopped::ir::{BinaryOp, ScalarExpr};
-use unpopped::kernel::{Block, BufferRole, KernelFn, LocalDecl, Param, Place, Stmt};
+use unpopped::kernel::{Block, BufferRole, KernelFn, LocalDecl, Param, Place, Stmt, Unroll};
 use unpopped::oracle::TypedBuffer;
 use unpopped::oracle::kernel_eval::KernelArg;
 use unpopped::oracle::kernel_launch::run_launch;
@@ -95,6 +95,7 @@ fn kernel(name: &str, e: ElementKind, loop_body: Vec<Stmt>, nested: bool) -> Ker
         start: local(1),
         end: local(2),
         step: local(3),
+        unroll: Unroll::None,
         body: Block(loop_body),
     };
     let looped = if nested {
@@ -103,6 +104,7 @@ fn kernel(name: &str, e: ElementKind, loop_body: Vec<Stmt>, nested: bool) -> Ker
             start: ce(0, e),
             end: ce(3, e),
             step: ce(1, e),
+            unroll: Unroll::None,
             body: Block(vec![inner]),
         }
     } else {

@@ -551,6 +551,8 @@ impl Em<'_> {
                 end,
                 step,
                 body,
+                // The unroll hint is non-semantic (every value gives the same result); not lowered.
+                ..
             } => self.for_loop(*local, [start, end, step], body)?,
             Stmt::Break => self.line("break;"),
             Stmt::Continue => self.line("continue;"),
@@ -632,7 +634,7 @@ impl Em<'_> {
                 self.line("}");
             }
             other => {
-                if let Some((name, patent)) = patent_declined(&format!("{other:?}")) {
+                if let Some((name, patent)) = patent_declined(other) {
                     return Err(refuse(format!(
                         "the statement {name}: declined by name. NVIDIA {patent}: OpenCL C is \
                          vendor-neutral and this emitter lowers none of these statements to a hardware operation"
@@ -672,35 +674,27 @@ fn place_name(p: &Place) -> &'static str {
 /// `US11803380B2` covers mbarrier operations (`Tcgen05Commit` arrives on an mbarrier and is cited
 /// as an extension of it per the PM, not read separately);
 /// `US12204897B2` (continuation `US12710961B2`) covers a wait on a count of pending
-/// matrix-multiply operations (`WgmmaWait`).
-///
-/// **TEMPORARY.** Matching a `Debug` string is brittle: a variant rename or a `Debug` change
-/// silently stops it. Replace it with an exhaustive `match` arm over the real `Stmt` variants,
-/// with tests that build real statements, at the repin to the first Unpopped version that
-/// contains them (owed; see `HANDOFF.md`, PM 2026-11-16).
-const NVIDIA_PATENT_DECLINED: &[(&str, &str)] = &[
-    ("MbarInit", "US11803380B2"),
-    ("MbarArrive", "US11803380B2"),
-    ("MbarCompleteTx", "US11803380B2"),
-    ("MbarWait", "US11803380B2"),
-    ("CopyBulk", "US11803380B2"),
-    ("Tcgen05Commit", "US11803380B2"),
-    ("WgmmaWait", "US12204897B2 (continuation US12710961B2)"),
-];
-
-/// The declined statement a `Debug` rendering names, with its patent, if any. It reads the
-/// leading identifier of `format!("{stmt:?}")`, which a derived `Debug` makes the variant name,
-/// so a statement Unpopped adds later is caught by name without this crate naming the variant
-/// (Unpopped 0.47.0 has none of them yet).
-fn patent_declined(debug: &str) -> Option<(&'static str, &'static str)> {
-    let head = debug
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .next()
-        .unwrap_or("");
-    NVIDIA_PATENT_DECLINED
-        .iter()
-        .copied()
-        .find(|(n, _)| *n == head)
+/// matrix-multiply operations (`WgmmaWait`). An arm over the real `Stmt` variants (Unpopped 0.56.2).
+fn patent_declined(s: &Stmt) -> Option<(&'static str, &'static str)> {
+    const MBAR: &str = "US11803380B2";
+    const ASYNC: &str = "US12118382B2 and US11294713B2 (board 434 C)";
+    const COLLECTIVE: &str = "US8539204B2 (board 434 C)";
+    match s {
+        Stmt::MbarInit { .. } => Some(("MbarInit", MBAR)),
+        Stmt::MbarArrive { .. } => Some(("MbarArrive", MBAR)),
+        Stmt::MbarCompleteTx { .. } => Some(("MbarCompleteTx", MBAR)),
+        Stmt::MbarWait { .. } => Some(("MbarWait", MBAR)),
+        Stmt::CopyBulk { .. } => Some(("CopyBulk", MBAR)),
+        Stmt::Tcgen05Commit { .. } => Some(("Tcgen05Commit", MBAR)),
+        Stmt::WgmmaWait { .. } => Some(("WgmmaWait", "US12204897B2 (continuation US12710961B2)")),
+        // Board 434 C (CireSnave 2026-11-13): async scheduling and collectives are declined by name.
+        Stmt::CopyAsync { .. } => Some(("CopyAsync", ASYNC)),
+        Stmt::AsyncCommit => Some(("AsyncCommit", ASYNC)),
+        Stmt::AsyncWait { .. } => Some(("AsyncWait", ASYNC)),
+        Stmt::Collective { .. } => Some(("Collective", COLLECTIVE)),
+        Stmt::CollectiveTuple { .. } => Some(("CollectiveTuple", COLLECTIVE)),
+        _ => None,
+    }
 }
 
 fn stmt_name(s: &Stmt) -> &'static str {
@@ -709,12 +703,7 @@ fn stmt_name(s: &Stmt) -> &'static str {
         Stmt::MaskedStore { .. } => "MaskedStore",
         Stmt::MulticastLoadReduce { .. } => "MulticastLoadReduce",
         Stmt::Fence { .. } => "Fence",
-        Stmt::Collective { .. } => "Collective",
-        Stmt::CollectiveTuple { .. } => "CollectiveTuple",
         Stmt::Mma { .. } => "Mma",
-        Stmt::CopyAsync { .. } => "CopyAsync",
-        Stmt::AsyncCommit => "AsyncCommit",
-        Stmt::AsyncWait { .. } => "AsyncWait",
         Stmt::Call { .. } => "Call",
         Stmt::CallTuple { .. } => "CallTuple",
         Stmt::ExternCall { .. } => "ExternCall",
@@ -846,52 +835,133 @@ pub(crate) fn lower_kernel(oc: &OpenClC, k: &KernelFn) -> Result<GeneratedKernel
 
 #[cfg(test)]
 mod tests {
-    use super::{NVIDIA_PATENT_DECLINED, patent_declined};
+    use super::patent_declined;
+    use unpopped::exec::Scope;
+    use unpopped::ir::ScalarExpr;
+    use unpopped::kernel::{CollectiveKind, Place, Stmt, VoteKind};
+    use unpopped_vocab::ElementKind;
+
+    fn place() -> Place {
+        Place::Alloc {
+            alloc: 0,
+            index: ScalarExpr::ConstInt(0, ElementKind::U32),
+        }
+    }
+    fn collective() -> Stmt {
+        Stmt::Collective {
+            kind: CollectiveKind::Vote(VoteKind::Any),
+            value: n(),
+            result: 0,
+            scope: Scope::Block,
+        }
+    }
+    fn n() -> ScalarExpr {
+        ScalarExpr::ConstInt(1, ElementKind::U32)
+    }
 
     #[test]
     fn each_nvidia_patent_statement_is_declined_by_name() {
-        // A derived `Debug` prints the variant name first, whatever its fields.
-        for (name, patent) in NVIDIA_PATENT_DECLINED {
-            assert_eq!(patent_declined(name), Some((*name, *patent)), "unit form");
-            assert_eq!(
-                patent_declined(&format!("{name} {{ barrier: 0, count: 1 }}")),
-                Some((*name, *patent)),
-                "struct form"
-            );
-            assert_eq!(
-                patent_declined(&format!("{name}(7)")),
-                Some((*name, *patent)),
-                "tuple form"
-            );
+        let declined = [
+            (
+                "MbarInit",
+                Stmt::MbarInit {
+                    bar: place(),
+                    count: n(),
+                },
+            ),
+            (
+                "MbarArrive",
+                Stmt::MbarArrive {
+                    bar: place(),
+                    tx: None,
+                },
+            ),
+            (
+                "MbarCompleteTx",
+                Stmt::MbarCompleteTx {
+                    bar: place(),
+                    bytes: n(),
+                },
+            ),
+            (
+                "MbarWait",
+                Stmt::MbarWait {
+                    bar: place(),
+                    parity: n(),
+                },
+            ),
+            (
+                "CopyBulk",
+                Stmt::CopyBulk {
+                    dst: place(),
+                    src: place(),
+                    elems: 4,
+                    bar: place(),
+                },
+            ),
+            ("Tcgen05Commit", Stmt::Tcgen05Commit { bar: place() }),
+            ("WgmmaWait", Stmt::WgmmaWait { pending: 0 }),
+            ("AsyncCommit", Stmt::AsyncCommit),
+            ("AsyncWait", Stmt::AsyncWait { pending: 0 }),
+            (
+                "CopyAsync",
+                Stmt::CopyAsync {
+                    dst: place(),
+                    src: place(),
+                    elems: 4,
+                    valid: None,
+                    cache: Default::default(),
+                    l2_prefetch: None,
+                },
+            ),
+            ("Collective", collective()),
+            (
+                "CollectiveTuple",
+                Stmt::CollectiveTuple {
+                    kind: CollectiveKind::Vote(VoteKind::All),
+                    values: vec![n()],
+                    results: vec![0],
+                    scope: Scope::Block,
+                },
+            ),
+        ];
+        assert_eq!(declined.len(), 12);
+        for (name, s) in &declined {
+            assert_eq!(patent_declined(s).map(|(n, _)| n), Some(*name));
         }
-        assert_eq!(NVIDIA_PATENT_DECLINED.len(), 7);
     }
 
     #[test]
     fn each_name_cites_its_own_patent() {
-        let patent = |s: &str| patent_declined(s).map(|(_, p)| p);
-        assert_eq!(patent("MbarWait { b: 0 }"), Some("US11803380B2"));
-        assert_eq!(patent("Tcgen05Commit { b: 0 }"), Some("US11803380B2"));
-        let wg = patent("WgmmaWait { n: 0 }").unwrap();
+        let p = |s: &Stmt| patent_declined(s).map(|(_, p)| p).unwrap();
+        assert_eq!(
+            p(&Stmt::MbarWait {
+                bar: place(),
+                parity: n()
+            }),
+            "US11803380B2"
+        );
+        assert_eq!(p(&Stmt::Tcgen05Commit { bar: place() }), "US11803380B2");
+        let wg = p(&Stmt::WgmmaWait { pending: 0 });
         assert!(
             wg.contains("US12204897B2") && wg.contains("US12710961B2"),
             "{wg}"
         );
+        let a = p(&Stmt::AsyncWait { pending: 0 });
+        assert!(
+            a.contains("US12118382B2") && a.contains("US11294713B2") && a.contains("434 C"),
+            "{a}"
+        );
+        assert_eq!(p(&Stmt::AsyncCommit), a);
+        let c = p(&collective());
+        assert!(c.contains("US8539204B2") && c.contains("434 C"), "{c}");
     }
 
     #[test]
     fn other_statements_are_not_swept_up() {
-        // Control: the matcher is not "always Some". Similar names pass.
-        for other in [
-            "CopyAsync { dst: 0 }",
-            "AsyncWait { n: 0 }",
-            "WgmmaWaitX { n: 0 }",
-            "MbarInitX { a: 1 }",
-            "CopyBulkExtra",
-            "Let { local: 0 }",
-            "",
-        ] {
-            assert_eq!(patent_declined(other), None, "{other}");
+        // Control: the match is not "always Some".
+        for s in [Stmt::Break, Stmt::WgmmaCommit, Stmt::Return] {
+            assert_eq!(patent_declined(&s), None, "{s:?}");
         }
     }
 }
