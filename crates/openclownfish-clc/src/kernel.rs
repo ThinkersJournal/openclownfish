@@ -674,7 +674,7 @@ fn place_name(p: &Place) -> &'static str {
 /// `US11803380B2` covers mbarrier operations (`Tcgen05Commit` arrives on an mbarrier and is cited
 /// as an extension of it per the PM, not read separately);
 /// `US12204897B2` (continuation `US12710961B2`) covers a wait on a count of pending
-/// matrix-multiply operations (`WgmmaWait`). An arm over the real `Stmt` variants (Unpopped 0.56.1).
+/// matrix-multiply operations (`WgmmaWait`). An arm over the real `Stmt` variants (Unpopped 0.56.2).
 fn patent_declined(s: &Stmt) -> Option<(&'static str, &'static str)> {
     const MBAR: &str = "US11803380B2";
     const ASYNC: &str = "US12118382B2 and US11294713B2 (board 434 C)";
