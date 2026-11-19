@@ -20,8 +20,11 @@
 //! `F32` `Div` is declined in both modes: OpenCL C bounds float division at 2.5 ULP and NVIDIA's
 //! is 1 ULP off the oracle, even when the source divides at `double` (the compiler narrows it).
 //! Also spelled: float `Max`, `Min`, `FmaxIeee`, `FminIeee` (helpers that follow Unpopped's NaN and
-//! signed-zero rules), `Abs`, `Sqr` and `Select`. Declined by name: float atomics, a
-//! cast from a float, the transcendental unary ops, and `F16`/`Bf16`. `Div` relies on
+//! signed-zero rules), `Abs`, `Sqr` and `Select`, and the float `Sqrt`, `Exp`, `Log`, `Tanh`,
+//! `Sin` and `Cos` through the device's built-ins (NOT bit-exact: OpenCL allows several ULP, the
+//! device test states a tolerance per op). Declined by name: float atomics, a
+//! cast from a float, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a float division), `Erf`, `Gelu`,
+//! and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
 //! rounding; the device test checks it bit for bit on every device here.
 //!
@@ -215,6 +218,22 @@ impl Em<'_> {
                     Err(refuse("an Abs or Sqr of a non-float"))
                 }
             }
+            ScalarExpr::Unary(
+                UnaryOp::Sqrt
+                | UnaryOp::Exp
+                | UnaryOp::Log
+                | UnaryOp::Tanh
+                | UnaryOp::Sin
+                | UnaryOp::Cos,
+                x,
+            ) => {
+                let x = self.ty(x)?;
+                if is_float(x) {
+                    Ok(x)
+                } else {
+                    Err(refuse("a transcendental op of a non-float"))
+                }
+            }
             ScalarExpr::Select(c, a, b) => {
                 self.ty(c)?;
                 let (x, y) = (self.ty(a)?, self.ty(b)?);
@@ -281,6 +300,16 @@ impl Em<'_> {
             }
             // A square rounds once, like a multiply; `Abs` and `Neg` only change a sign bit.
             ScalarExpr::Unary(UnaryOp::Sqr, x) => usize::from(is32(e)) + self.f32_roundings(x),
+            // A device built-in rounds once (within its own ULP bound, not the oracle's).
+            ScalarExpr::Unary(
+                UnaryOp::Sqrt
+                | UnaryOp::Exp
+                | UnaryOp::Log
+                | UnaryOp::Tanh
+                | UnaryOp::Sin
+                | UnaryOp::Cos,
+                x,
+            ) => usize::from(is32(e)) + self.f32_roundings(x),
             ScalarExpr::Unary(_, x) | ScalarExpr::Cast(x, _) => self.f32_roundings(x),
             // The chosen arm is moved, not computed on; the condition is counted too, because
             // its own rounding decides which arm is chosen.
@@ -359,6 +388,28 @@ impl Em<'_> {
             ScalarExpr::Unary(UnaryOp::Sqr, x) => {
                 let t = self.ty(e)?;
                 format!("{}({})", self.helper("ocl_sqr", t), self.expr(x)?)
+            }
+            // The OpenCL C built-in of the evaluation type (`double` when wide). Not bit-exact:
+            // the spec allows several ULP, so the device test states a tolerance per op.
+            ScalarExpr::Unary(
+                op @ (UnaryOp::Sqrt
+                | UnaryOp::Exp
+                | UnaryOp::Log
+                | UnaryOp::Tanh
+                | UnaryOp::Sin
+                | UnaryOp::Cos),
+                x,
+            ) => {
+                self.ty(e)?;
+                let f = match op {
+                    UnaryOp::Sqrt => "sqrt",
+                    UnaryOp::Exp => "exp",
+                    UnaryOp::Log => "log",
+                    UnaryOp::Tanh => "tanh",
+                    UnaryOp::Sin => "sin",
+                    _ => "cos",
+                };
+                format!("{f}({})", self.expr(x)?)
             }
             // The condition is tested `!= 0`: NaN is true and -0.0 is false, as in the oracle.
             // The chosen arm is moved, not computed on.
