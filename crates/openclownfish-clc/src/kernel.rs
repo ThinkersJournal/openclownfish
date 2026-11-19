@@ -19,8 +19,12 @@
 //! operation (where the two agree) and anything more, `Fma` included, is declined by name.
 //! `F32` `Div` is declined in both modes: OpenCL C bounds float division at 2.5 ULP and NVIDIA's
 //! is 1 ULP off the oracle, even when the source divides at `double` (the compiler narrows it).
-//! Declined by name: float atomics, `Max` and `Min` on floats, a
-//! cast from a float, the transcendental unary ops, `Select`, and `F16`/`Bf16`. `Div` relies on
+//! Also spelled: float `Max`, `Min`, `FmaxIeee`, `FminIeee` (helpers that follow Unpopped's NaN and
+//! signed-zero rules), `Abs`, `Sqr` and `Select`, and the float `Sqrt`, `Exp`, `Log`, `Tanh`,
+//! `Sin` and `Cos` through the device's built-ins (NOT bit-exact: OpenCL allows several ULP, the
+//! device test states a tolerance per op). Declined by name: float atomics, a
+//! cast from a float, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a float division), `Erf`, `Gelu`,
+//! and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
 //! rounding; the device test checks it bit for bit on every device here.
 //!
@@ -71,6 +75,8 @@
 //! strides, no base. The interpreter traps an out-of-bounds access and OpenCL C cannot, so a
 //! kernel must keep its accesses inside its buffers (a precondition, not a check).
 
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use unpopped::backend::{GeneratedKernel, LowerError};
@@ -160,6 +166,8 @@ struct Em<'a> {
     wide: bool,
     out: String,
     depth: usize,
+    /// Helper functions the body calls, by name (see [`HELPERS`]); written once before the kernel.
+    helpers: RefCell<BTreeSet<(&'static str, bool)>>,
 }
 
 impl Em<'_> {
@@ -200,6 +208,39 @@ impl Em<'_> {
                     Ok(x)
                 } else {
                     Err(refuse("a Neg of a non-float"))
+                }
+            }
+            ScalarExpr::Unary(UnaryOp::Abs | UnaryOp::Sqr, x) => {
+                let x = self.ty(x)?;
+                if is_float(x) {
+                    Ok(x)
+                } else {
+                    Err(refuse("an Abs or Sqr of a non-float"))
+                }
+            }
+            ScalarExpr::Unary(
+                UnaryOp::Sqrt
+                | UnaryOp::Exp
+                | UnaryOp::Log
+                | UnaryOp::Tanh
+                | UnaryOp::Sin
+                | UnaryOp::Cos,
+                x,
+            ) => {
+                let x = self.ty(x)?;
+                if is_float(x) {
+                    Ok(x)
+                } else {
+                    Err(refuse("a transcendental op of a non-float"))
+                }
+            }
+            ScalarExpr::Select(c, a, b) => {
+                self.ty(c)?;
+                let (x, y) = (self.ty(a)?, self.ty(b)?);
+                if x == y {
+                    Ok(x)
+                } else {
+                    Err(refuse(format!("a Select of {x:?} and {y:?}")))
                 }
             }
             ScalarExpr::Fma(a, b, c) => {
@@ -257,7 +298,24 @@ impl Em<'_> {
                     + self.f32_roundings(b)
                     + self.f32_roundings(c)
             }
+            // A square rounds once, like a multiply; `Abs` and `Neg` only change a sign bit.
+            ScalarExpr::Unary(UnaryOp::Sqr, x) => usize::from(is32(e)) + self.f32_roundings(x),
+            // A device built-in rounds once (within its own ULP bound, not the oracle's).
+            ScalarExpr::Unary(
+                UnaryOp::Sqrt
+                | UnaryOp::Exp
+                | UnaryOp::Log
+                | UnaryOp::Tanh
+                | UnaryOp::Sin
+                | UnaryOp::Cos,
+                x,
+            ) => usize::from(is32(e)) + self.f32_roundings(x),
             ScalarExpr::Unary(_, x) | ScalarExpr::Cast(x, _) => self.f32_roundings(x),
+            // The chosen arm is moved, not computed on; the condition is counted too, because
+            // its own rounding decides which arm is chosen.
+            ScalarExpr::Select(c, a, b) => {
+                self.f32_roundings(c) + self.f32_roundings(a) + self.f32_roundings(b)
+            }
             ScalarExpr::Binary(_, a, b) => self.f32_roundings(a) + self.f32_roundings(b),
             _ => 0,
         }
@@ -323,6 +381,47 @@ impl Em<'_> {
                 self.ty(e)?;
                 format!("(-({}))", self.expr(x)?)
             }
+            ScalarExpr::Unary(UnaryOp::Abs, x) => {
+                self.ty(e)?;
+                format!("fabs({})", self.expr(x)?)
+            }
+            ScalarExpr::Unary(UnaryOp::Sqr, x) => {
+                let t = self.ty(e)?;
+                format!("{}({})", self.helper("ocl_sqr", t), self.expr(x)?)
+            }
+            // The OpenCL C built-in of the evaluation type (`double` when wide). Not bit-exact:
+            // the spec allows several ULP, so the device test states a tolerance per op.
+            ScalarExpr::Unary(
+                op @ (UnaryOp::Sqrt
+                | UnaryOp::Exp
+                | UnaryOp::Log
+                | UnaryOp::Tanh
+                | UnaryOp::Sin
+                | UnaryOp::Cos),
+                x,
+            ) => {
+                self.ty(e)?;
+                let f = match op {
+                    UnaryOp::Sqrt => "sqrt",
+                    UnaryOp::Exp => "exp",
+                    UnaryOp::Log => "log",
+                    UnaryOp::Tanh => "tanh",
+                    UnaryOp::Sin => "sin",
+                    _ => "cos",
+                };
+                format!("{f}({})", self.expr(x)?)
+            }
+            // The condition is tested `!= 0`: NaN is true and -0.0 is false, as in the oracle.
+            // The chosen arm is moved, not computed on.
+            ScalarExpr::Select(c, a, b) => {
+                self.ty(e)?;
+                format!(
+                    "((({}) != 0) ? ({}) : ({}))",
+                    self.expr(c)?,
+                    self.expr(a)?,
+                    self.expr(b)?
+                )
+            }
             ScalarExpr::Fma(a, b, c) => {
                 self.ty(e)?;
                 format!(
@@ -371,12 +470,22 @@ impl Em<'_> {
             ScalarExpr::Binary(op, a, b) => {
                 let t = self.ty(e)?;
                 let c = ctype(t, "a comparison")?;
-                if is_float(t) && matches!(op, BinaryOp::Max | BinaryOp::Min) {
-                    return Err(refuse(
-                        "a float Max or Min (NaN and signed-zero rules are not matched)",
-                    ));
-                }
                 let (x, y) = (self.expr(a)?, self.expr(b)?);
+                if is_float(t) {
+                    // Unpopped's reference rules, not OpenCL's `fmax`/`fmin` (which leave the
+                    // sign of a zero result unspecified): `Max`/`Min` propagate NaN,
+                    // `FmaxIeee`/`FminIeee` suppress it, a tie takes the first operand.
+                    let name = match op {
+                        BinaryOp::Max => Some("ocl_max"),
+                        BinaryOp::Min => Some("ocl_min"),
+                        BinaryOp::FmaxIeee => Some("ocl_fmax"),
+                        BinaryOp::FminIeee => Some("ocl_fmin"),
+                        _ => None,
+                    };
+                    if let Some(name) = name {
+                        return Ok(format!("{}({x}, {y})", self.helper(name, t)));
+                    }
+                }
                 let cmp = |o: &str| format!("(({x}) {o} ({y}) ? ({c})1 : ({c})0)");
                 match op {
                     BinaryOp::CmpEq => cmp("=="),
@@ -392,6 +501,14 @@ impl Em<'_> {
             }
             other => return Err(refuse(format!("the expression form {other:?}"))),
         })
+    }
+
+    /// The name of the helper `base` for an expression of type `t`, and a request to emit it. An
+    /// `F32` expression is a `double` one when evaluated wide.
+    fn helper(&self, base: &'static str, t: ElementKind) -> String {
+        let double = t == ElementKind::F64 || self.wide;
+        self.helpers.borrow_mut().insert((base, double));
+        format!("{base}_{}", if double { 'd' } else { 'f' })
     }
 
     /// The element of `place` as a C lvalue, and its element type and address space.
@@ -711,6 +828,76 @@ fn stmt_name(s: &Stmt) -> &'static str {
     }
 }
 
+/// Helper functions a kernel carries when its body calls them; `REAL` is `float` or `double` and
+/// `_S` is `_f` or `_d`. They follow Unpopped's normative reference, not OpenCL's `fmax`/`fmin`,
+/// which leave the sign of a zero result unspecified for `(-0, +0)`: `Max`/`Min` move a NaN
+/// through, `FmaxIeee`/`FminIeee` suppress it, and on a tie the first operand wins.
+const HELPERS: &[(&str, &str)] = &[
+    (
+        "ocl_sqr",
+        "inline REAL ocl_sqr_S(REAL x) { return x * x; }
+",
+    ),
+    (
+        "ocl_max",
+        "inline REAL ocl_max_S(REAL a, REAL b) {
+    if (isnan(a)) { return a; }
+    if (isnan(b)) { return b; }
+    return a >= b ? a : b;
+}
+",
+    ),
+    (
+        "ocl_min",
+        "inline REAL ocl_min_S(REAL a, REAL b) {
+    if (isnan(a)) { return a; }
+    if (isnan(b)) { return b; }
+    return a <= b ? a : b;
+}
+",
+    ),
+    (
+        "ocl_fmax",
+        "inline REAL ocl_fmax_S(REAL a, REAL b) {
+    if (isnan(a)) { return b; }
+    if (isnan(b)) { return a; }
+    return a >= b ? a : b;
+}
+",
+    ),
+    (
+        "ocl_fmin",
+        "inline REAL ocl_fmin_S(REAL a, REAL b) {
+    if (isnan(a)) { return b; }
+    if (isnan(b)) { return a; }
+    return a <= b ? a : b;
+}
+",
+    ),
+];
+
+/// The source of the helpers `used` names, in a stable order.
+fn helper_source(used: &BTreeSet<(&'static str, bool)>) -> String {
+    let mut s = String::new();
+    for (base, double) in used {
+        let (_, template) = HELPERS
+            .iter()
+            .find(|(n, _)| n == base)
+            .expect("a helper that is requested exists");
+        let (real, suffix) = if *double {
+            ("double", "_d")
+        } else {
+            ("float", "_f")
+        };
+        s.push_str(
+            &template
+                .replace("REAL", real)
+                .replace("_S(", &format!("{suffix}(")),
+        );
+    }
+    s
+}
+
 fn is_ident(s: &str) -> bool {
     let mut c = s.chars();
     c.next()
@@ -791,6 +978,7 @@ pub(crate) fn lower_kernel(oc: &OpenClC, k: &KernelFn) -> Result<GeneratedKernel
         wide: oc.fp64,
         out: String::new(),
         depth: 1,
+        helpers: RefCell::new(BTreeSet::new()),
     };
     for (i, a) in k.allocs.iter().enumerate() {
         let c = ctype(a.elem, &format!("array `{}`", a.name))?;
@@ -827,6 +1015,7 @@ pub(crate) fn lower_kernel(oc: &OpenClC, k: &KernelFn) -> Result<GeneratedKernel
         // One rounding per operation, as the oracle has: no fused multiply-add behind our back.
         s.push_str("#pragma OPENCL FP_CONTRACT OFF\n");
     }
+    s.push_str(&helper_source(&em.helpers.borrow()));
     let _ = writeln!(s, "__kernel void {}({head}) {{", k.name);
     s.push_str(&em.out);
     s.push_str("}\n");
