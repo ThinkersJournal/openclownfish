@@ -170,26 +170,58 @@ fn un(op: UnaryOp) -> ScalarExpr {
 
 /// `(name, op, tolerance in ULPs of the compute type)`.
 fn ops(e: ElementKind, wide: bool) -> Vec<(&'static str, UnaryOp, u64)> {
-    if e == ElementKind::F32 && wide {
-        // Evaluated at double, rounded once to f32.
-        return vec![
-            ("t_sqrt", UnaryOp::Sqrt, 1),
-            ("t_exp", UnaryOp::Exp, 1),
-            ("t_log", UnaryOp::Log, 1),
-            ("t_tanh", UnaryOp::Tanh, 1),
-            ("t_sin", UnaryOp::Sin, 1),
-            ("t_cos", UnaryOp::Cos, 1),
-        ];
+    use UnaryOp::*;
+    // Bit for bit in every mode (they do not round: the oracle's `f64` result is already exact).
+    let mut v = vec![
+        ("e_floor", Floor, 0),
+        ("e_ceil", Ceil, 0),
+        ("e_trunc", Trunc, 0),
+        ("e_round", Round, 0),
+        ("e_relu", Relu, 0),
+        ("e_sign", Sign, 0),
+        ("e_step", Step, 0),
+    ];
+    // The OpenCL C 1.2 maxima for `float` and `double` (identical for these ops except `sqrt`).
+    let table: [(&'static str, UnaryOp, u64); 21] = [
+        ("t_sqrt", Sqrt, if e == ElementKind::F32 { 3 } else { 0 }),
+        ("t_exp", Exp, 3),
+        ("t_log", Log, 3),
+        ("t_tanh", Tanh, 5),
+        ("t_sin", Sin, 4),
+        ("t_cos", Cos, 4),
+        ("t_exp2", Exp2, 3),
+        ("t_expm1", Expm1, 3),
+        ("t_log2", Log2, 3),
+        ("t_log10", Log10, 3),
+        ("t_log1p", Log1p, 2),
+        ("t_sinh", Sinh, 4),
+        ("t_cosh", Cosh, 4),
+        ("t_tan", Tan, 5),
+        ("t_asin", Asin, 4),
+        ("t_acos", Acos, 4),
+        ("t_atan", Atan, 5),
+        ("t_asinh", Asinh, 4),
+        ("t_acosh", Acosh, 4),
+        ("t_atanh", Atanh, 5),
+        ("t_cbrt", Cbrt, 4),
+    ];
+    for (n, op, tol) in table {
+        // The oracle's F64 atanh is inaccurate near -1 (1172 ULP off libm); declined, see below.
+        if op == Atanh && e == ElementKind::F64 {
+            continue;
+        }
+        // Evaluated at double and rounded once to f32: within 1 ULP of f32.
+        v.push((
+            n,
+            op,
+            if e == ElementKind::F32 && wide {
+                1
+            } else {
+                tol
+            },
+        ));
     }
-    let sqrt = if e == ElementKind::F32 { 3 } else { 0 };
-    vec![
-        ("t_sqrt", UnaryOp::Sqrt, sqrt),
-        ("t_exp", UnaryOp::Exp, 3),
-        ("t_log", UnaryOp::Log, 3),
-        ("t_tanh", UnaryOp::Tanh, 5),
-        ("t_sin", UnaryOp::Sin, 4),
-        ("t_cos", UnaryOp::Cos, 4),
-    ]
+    v
 }
 
 fn kernel(name: &str, e: ElementKind, value: ScalarExpr) -> KernelFn {
@@ -220,12 +252,12 @@ fn kernel(name: &str, e: ElementKind, value: ScalarExpr) -> KernelFn {
     ))
 }
 
-/// Values in `[-8, 8)` with NaN, both infinities and both zeros mixed in.
-fn data(e: ElementKind) -> Vec<Vec<u8>> {
+/// Values in `[-scale/2, scale/2)` with NaN, both infinities and both zeros mixed in.
+fn data(e: ElementKind, scale: f64) -> Vec<Vec<u8>> {
     let mut s = 0x0bad_cafe_1234_5678u64;
     let mut xs = Vec::new();
     for t in 0..T {
-        let x = (unit(&mut s) - 0.5) * 16.0;
+        let x = (unit(&mut s) - 0.5) * scale;
         let x = match t % 16 {
             0 => f64::NAN,
             1 => f64::INFINITY,
@@ -270,12 +302,21 @@ fn transcendentals_agree_within_their_stated_ulps_on_every_device() {
                 let backend = OpenClC::new().with_fp64(wide);
                 for (name, op, tol) in ops(e, wide) {
                     let k = kernel(name, e, un(op));
-                    let init = data(e);
-                    let want = oracle(&k, &init, e);
-                    let got = device(&ctx, &queue, &backend, &k, &init)
-                        .unwrap_or_else(|l| panic!("{label}: {name} failed to build:\n{l}"));
-                    let worst = max_ulps(&got, &want, e)
-                        .unwrap_or_else(|m| panic!("{label}: {e:?} wide={wide} {name}: {m}"));
+                    // A wide range, and one inside the domain of `asin`, `acos` and `atanh`.
+                    let mut worst = 0;
+                    for scale in [16.0, 2.4] {
+                        let init = data(e, scale);
+                        let want = oracle(&k, &init, e);
+                        let got = device(&ctx, &queue, &backend, &k, &init).unwrap_or_else(|l| {
+                            panic!(
+                                "{label}: {name} failed to build:
+{l}"
+                            )
+                        });
+                        let w = max_ulps(&got, &want, e)
+                            .unwrap_or_else(|m| panic!("{label}: {e:?} wide={wide} {name}: {m}"));
+                        worst = worst.max(w);
+                    }
                     eprintln!("{label}: {e:?} wide={wide} {name}: worst {worst} ULP (limit {tol})");
                     assert!(
                         worst <= tol,
@@ -298,7 +339,9 @@ fn recip_rsqrt_sigmoid_silu_erf_gelu_are_declined_by_name() {
         UnaryOp::Sigmoid,
         UnaryOp::Silu,
         UnaryOp::Erf,
+        UnaryOp::Erfc,
         UnaryOp::Gelu,
+        UnaryOp::Lgamma,
     ] {
         let k = kernel("declined", ElementKind::F32, un(op));
         let err = OpenClC::new()
@@ -310,4 +353,15 @@ fn recip_rsqrt_sigmoid_silu_erf_gelu_are_declined_by_name() {
             "{op:?}: {err}"
         );
     }
+}
+
+/// An F64 `Atanh` is declined by name: the oracle's own result is up to 1172 ULP off libm.
+#[test]
+fn f64_atanh_is_declined_by_name() {
+    let k = kernel("atanh64", ElementKind::F64, un(UnaryOp::Atanh));
+    let err = OpenClC::new()
+        .with_fp64(true)
+        .lower_kernel(&k)
+        .expect_err("declined");
+    assert!(format!("{err}").contains("F64 Atanh"), "{err}");
 }
