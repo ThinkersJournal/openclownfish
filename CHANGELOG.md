@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Emitter: `lower_kernel` spells float `Max`, `Min`, `FmaxIeee` and `FminIeee` (helper functions that follow Unpopped's rules, not OpenCL's `fmax`/`fmin`: `Max`/`Min` move a NaN through, the `Ieee` pair suppress it, and a tie takes the first operand), float `Abs` and `Sqr`, and `Select` (condition tested `!= 0`: NaN true, -0 false). Before, a float `Max`/`Min` and `Select` were declined by name. F32 transcendental unary ops (`Exp`, `Log`, `Sqrt`, ...) are still declined: their device results are not bit-equal to the oracle's and need a stated ULP tolerance first.
+- Tests: `tests/device_agrees_float_ops.rs`, 90 checks bit for bit against the launch interpreter on the 3 laptop devices, with NaN in either operand, both infinities and both zeros including `(-0, +0)` ties; two mutants (a tie rule changed from `>=` to `>`, `Select` tested `> 0` instead of `!= 0`) each fail it. The oracle's `FmaxIeee`/`FminIeee` is Rust's `f64::max`/`min`, whose sign for `(+0, -0)` is unspecified, so those kernels accept either zero there. Patent: no new search; plain arithmetic and comparison, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
 ## 0.2.0
 
 - **Breaking**: dependencies `unpopped`, `unpopped-vocab` and `unpopped-convert` 0.47.0 to 0.56.2 (0.48 to 0.56.0 were never published; the repin goes straight to 0.56.2). Who is affected: anyone who builds `openclownfish-clc` with the `parse` feature alongside their own `unpopped` (the `parse` feature pulls `unpopped-convert`, which moves with it).

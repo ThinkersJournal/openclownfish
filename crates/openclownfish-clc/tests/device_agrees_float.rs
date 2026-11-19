@@ -432,16 +432,16 @@ fn float_spelling_and_declines() {
     assert!(src.contains("((double)0.1)"), "{src}");
     // F64 needs the opt-in.
     declined(&branchy(ElementKind::F64), &OpenClC::new(), "with_fp64");
-    // A float Max is declined by name.
+    // A float Max now lowers (device_agrees_float_ops.rs); a float Pow is still declined by name.
     let mut k = horner(ElementKind::F32);
     k.body.0.insert(
         3,
         Stmt::Assign {
             local: 2,
-            value: cmp(BinaryOp::Max, local(0), local(1)),
+            value: cmp(BinaryOp::Pow, local(0), local(1)),
         },
     );
-    declined(&k, &on, "Max or Min");
+    declined(&k, &on, "Pow");
     // A float atomic is declined even with the atomics opt-in.
     let mut k = horner(ElementKind::F32);
     k.body.0.insert(
