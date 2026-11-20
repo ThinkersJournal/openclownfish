@@ -28,7 +28,8 @@
 //! limits) and an F64 floored `Rem`; a float `Nextafter` and an F32 `Rem` are declined by name
 //! (NOT bit-exact: OpenCL allows several ULP, the device test states a tolerance per op).
 //! An integer-to-float `Cast` (`Wrap`; `NearestEven`, `TowardZero`, `TowardNegInf`, `TowardPosInf`, to `F32`/`F64`)
-//! is spelled with `convert_float_*`/`convert_double_*`; `NearestAway` and float-to-float are declined.
+//! is spelled with `convert_float_*`/`convert_double_*`, as is an `F64`-to-`F32` cast and an exact `F32`-to-`F64`
+//! one; `NearestAway` (but for `F32` to `F64`) is declined.
 //! A float-to-integer `Cast` (`Clamp`, any rounding mode, NaN to 0; to `I32`, `U32`, `I64`,
 //! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
 //! float division), `Erf`, `Erfc`, `Gelu`, `Lgamma`, an `F64` `Atanh` (the oracle's is
@@ -255,14 +256,15 @@ impl Em<'_> {
                 if is_float(spec.to) {
                     // Integer to float: one conversion in the mode's rounding (`NearestAway`
                     // has no OpenCL conversion). Float to float is not spelled.
-                    if is_float(self.ty(x)?) {
-                        return Err(refuse("a float-to-float cast"));
-                    }
+                    let from = self.ty(x)?;
                     if spec.sat != Saturation::Wrap {
-                        return Err(refuse("an integer-to-float cast that is not Wrap"));
+                        return Err(refuse("a cast to a float that is not Wrap"));
                     }
-                    if spec.round == RoundMode::NearestAway {
-                        return Err(refuse("an integer-to-float cast rounding ties away"));
+                    // F32 to F64 is exact (any mode); F64 to F32 and integer to float round.
+                    if spec.round == RoundMode::NearestAway
+                        && !(from == ElementKind::F32 && spec.to == ElementKind::F64)
+                    {
+                        return Err(refuse("a float cast rounding ties away"));
                     }
                     return Ok(spec.to);
                 }
@@ -482,6 +484,9 @@ impl Em<'_> {
                 let from = self.ty(x)?;
                 if is_float(spec.to) {
                     let inner = self.expr(x)?;
+                    if from == ElementKind::F32 && spec.to == ElementKind::F64 {
+                        return Ok(format!("convert_double({inner})"));
+                    }
                     let conv = match (spec.to, spec.round) {
                         (ElementKind::F32, RoundMode::NearestEven) => "convert_float_rte",
                         (ElementKind::F32, RoundMode::TowardZero) => "convert_float_rtz",
