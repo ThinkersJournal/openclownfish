@@ -27,7 +27,8 @@
 //! and the float binary `Copysign`, `RemTrunc` (`fmod`, exact), `Pow`, `Atan2` (built-ins, ULP
 //! limits) and an F64 floored `Rem`; a float `Nextafter` and an F32 `Rem` are declined by name
 //! (NOT bit-exact: OpenCL allows several ULP, the device test states a tolerance per op).
-//! Declined by name: float atomics, a cast from a float, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
+//! A float-to-integer `Cast` (`Clamp`, any rounding mode, NaN to 0; to `I32`, `U32`, `I64`,
+//! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
 //! float division), `Erf`, `Erfc`, `Gelu`, `Lgamma`, an `F64` `Atanh` (the oracle's is
 //! inaccurate near -1), and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
@@ -86,7 +87,7 @@ use std::fmt::Write as _;
 
 use unpopped::backend::{GeneratedKernel, LowerError};
 use unpopped::exec::{Extent, MemorySpace, Scope};
-use unpopped::ir::{BinaryOp, Saturation, ScalarExpr, UnaryOp};
+use unpopped::ir::{BinaryOp, RoundMode, Saturation, ScalarExpr, UnaryOp};
 use unpopped::kernel::{
     AtomicOp, BarrierKind, Block, KernelFn, MemoryOrder, ParamKind, Place, Stmt, check_kernel,
 };
@@ -250,7 +251,14 @@ impl Em<'_> {
             }
             ScalarExpr::Cast(x, spec) => {
                 if is_float(self.ty(x)?) {
-                    return Err(refuse("a cast from a float"));
+                    // The oracle's float-to-integer cast rounds by the mode, clamps and maps
+                    // NaN to 0; only `Clamp` is defined for it.
+                    if spec.sat != Saturation::Clamp {
+                        return Err(refuse("a cast from a float that is not Clamp"));
+                    }
+                    return int_c(spec.to)
+                        .map(|_| spec.to)
+                        .ok_or_else(|| refuse("a cast to this type"));
                 }
                 if spec.sat != Saturation::Wrap {
                     return Err(refuse("a saturating cast"));
@@ -456,6 +464,29 @@ impl Em<'_> {
                 let from = self.ty(x)?;
                 let (c, _, u) = int_c(spec.to).ok_or_else(|| refuse("a cast to this type"))?;
                 let inner = self.expr(x)?;
+                if is_float(from) {
+                    // Round with the built-in of the mode (exact), then clamp and map NaN to 0
+                    // in a helper, so no out-of-range float-to-integer conversion is executed.
+                    let round = match spec.round {
+                        RoundMode::NearestEven => "rint",
+                        RoundMode::TowardZero => "trunc",
+                        RoundMode::TowardNegInf => "floor",
+                        RoundMode::TowardPosInf => "ceil",
+                        RoundMode::NearestAway => "round",
+                        _ => {
+                            return Err(refuse(
+                                "a cast rounding mode this emitter has not been taught",
+                            ));
+                        }
+                    };
+                    let h = match spec.to {
+                        ElementKind::I32 => "ocl_f2i_i32",
+                        ElementKind::U32 => "ocl_f2i_u32",
+                        ElementKind::I64 => "ocl_f2i_i64",
+                        _ => "ocl_f2i_u64",
+                    };
+                    return Ok(format!("{}({round}({inner}))", self.helper(h, from)));
+                }
                 if bits(spec.to) > bits(from) {
                     format!("(({c})({inner}))")
                 } else {
@@ -904,6 +935,46 @@ fn unary_kind(op: &UnaryOp) -> Option<UnaryKind> {
 /// which leave the sign of a zero result unspecified for `(-0, +0)`: `Max`/`Min` move a NaN
 /// through, `FmaxIeee`/`FminIeee` suppress it, and on a tie the first operand wins.
 const HELPERS: &[(&str, &str)] = &[
+    (
+        "ocl_f2i_i32",
+        "inline int ocl_f2i_i32_S(REAL r) {
+    if (isnan(r)) { return 0; }
+    if (r >= (REAL)2147483648.0) { return INT_MAX; }
+    if (r < (REAL)-2147483648.0) { return INT_MIN; }
+    return (int)r;
+}
+",
+    ),
+    (
+        "ocl_f2i_u32",
+        "inline uint ocl_f2i_u32_S(REAL r) {
+    if (isnan(r)) { return 0u; }
+    if (r >= (REAL)4294967296.0) { return UINT_MAX; }
+    if (r < (REAL)0.0) { return 0u; }
+    return (uint)r;
+}
+",
+    ),
+    (
+        "ocl_f2i_i64",
+        "inline long ocl_f2i_i64_S(REAL r) {
+    if (isnan(r)) { return 0l; }
+    if (r >= (REAL)9223372036854775808.0) { return LONG_MAX; }
+    if (r < (REAL)-9223372036854775808.0) { return LONG_MIN; }
+    return (long)r;
+}
+",
+    ),
+    (
+        "ocl_f2i_u64",
+        "inline ulong ocl_f2i_u64_S(REAL r) {
+    if (isnan(r)) { return 0ul; }
+    if (r >= (REAL)18446744073709551616.0) { return ULONG_MAX; }
+    if (r < (REAL)0.0) { return 0ul; }
+    return (ulong)r;
+}
+",
+    ),
     (
         "ocl_rem",
         "inline REAL ocl_rem_S(REAL a, REAL b) { return a - floor(a / b) * b; }
