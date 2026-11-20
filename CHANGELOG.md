@@ -1,15 +1,15 @@
 # Changelog
 
-## 0.2.2 - 2026-11-20
-
-- Emitter: `lower_kernel` spells the float binary ops `Copysign` and `RemTrunc` (`fmod`) bit for bit (the sign of a zero included), `Pow` and `Atan2` through the device built-ins within OpenCL's ULP maxima (`pow` 16, `atan2` 6; 1 ULP of f32 when an F32 kernel computes at `double` under `with_fp64`; measured worst 2 ULP on the 3 laptop devices), and the floored `Rem` (`a - floor(a / b) * b`) for F64 only. Declined by name: a float `Nextafter` (it steps the compute type's own lattice) and an F32 `Rem` (it divides, and the device's float division is not correctly rounded).
-- Tests: `tests/device_agrees_float_binary.rs`, 39 checks on the 3 laptop devices over two input ranges with NaN, both infinities and both zeros; a mutant spelling `Copysign` as `hypot` fails it. The exact ops in this file and in `device_agrees_float_transcendental.rs` are now compared bit for bit including the sign of zero (the ULP distance cannot tell `-0` from `+0`); all still pass. Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
-
 ## Unreleased (pm-assist allocates the number at the gate)
 
 - Emitter: `lower_kernel` spells more float unary ops, all declined by name before. Exact (bit for bit, no rounding): `Floor`, `Ceil`, `Trunc`, `Round` (ties to even, `rint`), `Relu` (NaN-propagating, -0 kept), `Sign`, `Step`. Through the device built-ins with stated OpenCL ULP limits: `Exp2`, `Expm1`, `Log2`, `Log10`, `Log1p`, `Sinh`, `Cosh`, `Tan`, `Asin`, `Acos`, `Atan`, `Asinh`, `Acosh`, `Atanh`, `Cbrt` (limits 2 to 5; with `with_fp64` an F32 kernel is within 1 ULP of f32). Still declined by name: `Recip`, `Rsqrt`, `Sigmoid`, `Silu`, `Erf`, `Erfc`, `Gelu`, `Lgamma`, and an F64 `Atanh` (the oracle's `f64::atanh` is 1172 ULP off libm near -1, measured, so no device can agree with it to a bound).
 - Tests: `tests/device_agrees_float_transcendental.rs` now 249 checks on the 3 laptop devices over two input ranges (one inside the domain of `asin`, `acos`, `atanh`); a mutant spelling `Floor` as `ceil` fails it. Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
 - Docs: ROADMAP X2 records the kernel-IR float ops.
+
+## 0.2.2 - 2026-11-20
+
+- Emitter: `lower_kernel` spells the float binary ops `Copysign` and `RemTrunc` (`fmod`) bit for bit (the sign of a zero included), `Pow` and `Atan2` through the device built-ins within OpenCL's ULP maxima (`pow` 16, `atan2` 6; 1 ULP of f32 when an F32 kernel computes at `double` under `with_fp64`; measured worst 2 ULP on the 3 laptop devices), and the floored `Rem` (`a - floor(a / b) * b`) for F64 only. Declined by name: a float `Nextafter` (it steps the compute type's own lattice) and an F32 `Rem` (it divides, and the device's float division is not correctly rounded).
+- Tests: `tests/device_agrees_float_binary.rs`, 39 checks on the 3 laptop devices over two input ranges with NaN, both infinities and both zeros; a mutant spelling `Copysign` as `hypot` fails it. The exact ops in this file and in `device_agrees_float_transcendental.rs` are now compared bit for bit including the sign of zero (the ULP distance cannot tell `-0` from `+0`); all still pass. Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
 
 ## 0.2.1
 
