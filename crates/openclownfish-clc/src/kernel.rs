@@ -27,6 +27,8 @@
 //! and the float binary `Copysign`, `RemTrunc` (`fmod`, exact), `Pow`, `Atan2` (built-ins, ULP
 //! limits) and an F64 floored `Rem`; a float `Nextafter` and an F32 `Rem` are declined by name
 //! (NOT bit-exact: OpenCL allows several ULP, the device test states a tolerance per op).
+//! An integer-to-float `Cast` (`Wrap`; `NearestEven`, `TowardZero`, `TowardNegInf`, `TowardPosInf`, to `F32`/`F64`)
+//! is spelled with `convert_float_*`/`convert_double_*`; `NearestAway` and float-to-float are declined.
 //! A float-to-integer `Cast` (`Clamp`, any rounding mode, NaN to 0; to `I32`, `U32`, `I64`,
 //! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
 //! float division), `Erf`, `Erfc`, `Gelu`, `Lgamma`, an `F64` `Atanh` (the oracle's is
@@ -250,6 +252,20 @@ impl Em<'_> {
                 }
             }
             ScalarExpr::Cast(x, spec) => {
+                if is_float(spec.to) {
+                    // Integer to float: one conversion in the mode's rounding (`NearestAway`
+                    // has no OpenCL conversion). Float to float is not spelled.
+                    if is_float(self.ty(x)?) {
+                        return Err(refuse("a float-to-float cast"));
+                    }
+                    if spec.sat != Saturation::Wrap {
+                        return Err(refuse("an integer-to-float cast that is not Wrap"));
+                    }
+                    if spec.round == RoundMode::NearestAway {
+                        return Err(refuse("an integer-to-float cast rounding ties away"));
+                    }
+                    return Ok(spec.to);
+                }
                 if is_float(self.ty(x)?) {
                     // The oracle's float-to-integer cast rounds by the mode, clamps and maps
                     // NaN to 0; only `Clamp` is defined for it.
@@ -310,7 +326,9 @@ impl Em<'_> {
             ScalarExpr::Unary(op, x) if matches!(unary_kind(op), Some(UnaryKind::Rounded(_))) => {
                 usize::from(is32(e)) + self.f32_roundings(x)
             }
-            ScalarExpr::Unary(_, x) | ScalarExpr::Cast(x, _) => self.f32_roundings(x),
+            // An integer converted to `F32` rounds once; a float-to-integer cast does not.
+            ScalarExpr::Cast(x, _) => usize::from(is32(e)) + self.f32_roundings(x),
+            ScalarExpr::Unary(_, x) => self.f32_roundings(x),
             // The chosen arm is moved, not computed on; the condition is counted too, because
             // its own rounding decides which arm is chosen.
             ScalarExpr::Select(c, a, b) => {
@@ -462,6 +480,25 @@ impl Em<'_> {
             }
             ScalarExpr::Cast(x, spec) => {
                 let from = self.ty(x)?;
+                if is_float(spec.to) {
+                    let inner = self.expr(x)?;
+                    let conv = match (spec.to, spec.round) {
+                        (ElementKind::F32, RoundMode::NearestEven) => "convert_float_rte",
+                        (ElementKind::F32, RoundMode::TowardZero) => "convert_float_rtz",
+                        (ElementKind::F32, RoundMode::TowardNegInf) => "convert_float_rtn",
+                        (ElementKind::F32, RoundMode::TowardPosInf) => "convert_float_rtp",
+                        (_, RoundMode::NearestEven) => "convert_double_rte",
+                        (_, RoundMode::TowardZero) => "convert_double_rtz",
+                        (_, RoundMode::TowardNegInf) => "convert_double_rtn",
+                        (_, RoundMode::TowardPosInf) => "convert_double_rtp",
+                        _ => {
+                            return Err(refuse(
+                                "a cast rounding mode this emitter has not been taught",
+                            ));
+                        }
+                    };
+                    return Ok(format!("{conv}({inner})"));
+                }
                 let (c, _, u) = int_c(spec.to).ok_or_else(|| refuse("a cast to this type"))?;
                 let inner = self.expr(x)?;
                 if is_float(from) {
