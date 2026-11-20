@@ -124,6 +124,19 @@ fn lane(b: &[u8], e: ElementKind) -> (f64, u64) {
     }
 }
 
+/// Bit equality (any two NaNs agree): unlike the ULP distance it tells `-0` from `+0`.
+fn exact_same(a: &[u8], b: &[u8], e: ElementKind) -> Result<(), String> {
+    let w = width(e);
+    for (i, (x, y)) in a.chunks(w).zip(b.chunks(w)).enumerate() {
+        let (fx, _) = lane(x, e);
+        let (fy, _) = lane(y, e);
+        if x != y && !(fx.is_nan() && fy.is_nan()) {
+            return Err(format!("element {i}: device {x:02x?}, oracle {y:02x?}"));
+        }
+    }
+    Ok(())
+}
+
 /// The largest ULP distance, erroring where NaN-ness or finiteness differs.
 fn max_ulps(a: &[u8], b: &[u8], e: ElementKind) -> Result<u64, String> {
     let w = width(e);
@@ -316,6 +329,11 @@ fn transcendentals_agree_within_their_stated_ulps_on_every_device() {
                         let w = max_ulps(&got, &want, e)
                             .unwrap_or_else(|m| panic!("{label}: {e:?} wide={wide} {name}: {m}"));
                         worst = worst.max(w);
+                        if tol == 0 {
+                            exact_same(&got, &want, e).unwrap_or_else(|m| {
+                                panic!("{label}: {e:?} wide={wide} {name}: {m}")
+                            });
+                        }
                     }
                     eprintln!("{label}: {e:?} wide={wide} {name}: worst {worst} ULP (limit {tol})");
                     assert!(

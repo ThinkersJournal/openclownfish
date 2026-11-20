@@ -24,6 +24,8 @@
 //! `Round` (ties to even), `Relu`, `Sign` and `Step` (bit for bit); and the float `Sqrt`, `Exp`,
 //! `Log`, `Tanh`, `Sin`, `Cos`, `Exp2`, `Expm1`, `Log2`, `Log10`, `Log1p`, `Sinh`, `Cosh`, `Tan`,
 //! `Asin`, `Acos`, `Atan`, `Asinh`, `Acosh`, `Atanh` and `Cbrt` through the device's built-ins
+//! and the float binary `Copysign`, `RemTrunc` (`fmod`, exact), `Pow`, `Atan2` (built-ins, ULP
+//! limits) and an F64 floored `Rem`; a float `Nextafter` and an F32 `Rem` are declined by name
 //! (NOT bit-exact: OpenCL allows several ULP, the device test states a tolerance per op).
 //! Declined by name: float atomics, a cast from a float, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
 //! float division), `Erf`, `Erfc`, `Gelu`, `Lgamma`, an `F64` `Atanh` (the oracle's is
@@ -306,7 +308,13 @@ impl Em<'_> {
             ScalarExpr::Select(c, a, b) => {
                 self.f32_roundings(c) + self.f32_roundings(a) + self.f32_roundings(b)
             }
-            ScalarExpr::Binary(_, a, b) => self.f32_roundings(a) + self.f32_roundings(b),
+            // `Pow` and `Atan2` are device built-ins that round once; `Copysign`, `RemTrunc`
+            // (`fmod`) and the comparisons are exact.
+            ScalarExpr::Binary(op, a, b) => {
+                usize::from(is32(e) && matches!(op, BinaryOp::Pow | BinaryOp::Atan2))
+                    + self.f32_roundings(a)
+                    + self.f32_roundings(b)
+            }
             _ => 0,
         }
     }
@@ -472,6 +480,33 @@ impl Em<'_> {
                     };
                     if let Some(name) = name {
                         return Ok(format!("{}({x}, {y})", self.helper(name, t)));
+                    }
+                    // Device built-ins. `Pow` and `Atan2` are within OpenCL's ULP bounds, not
+                    // the oracle's bits; `Copysign` and `fmod` (`RemTrunc`) are exact.
+                    let builtin = match op {
+                        BinaryOp::Pow => Some("pow"),
+                        BinaryOp::Atan2 => Some("atan2"),
+                        BinaryOp::Copysign => Some("copysign"),
+                        BinaryOp::RemTrunc => Some("fmod"),
+                        _ => None,
+                    };
+                    if let Some(f) = builtin {
+                        return Ok(format!("{f}(({x}), ({y}))"));
+                    }
+                    if matches!(op, BinaryOp::Rem) {
+                        // The floored remainder `a - floor(a / b) * b` needs a division, and a
+                        // float division is declined (see `Div`); only F64 is spelled.
+                        if t == ElementKind::F32 {
+                            return Err(refuse(
+                                "an F32 Rem (it divides, and the device's float division is not correctly rounded)",
+                            ));
+                        }
+                        return Ok(format!("{}({x}, {y})", self.helper("ocl_rem", t)));
+                    }
+                    if matches!(op, BinaryOp::Nextafter) {
+                        return Err(refuse(
+                            "a float Nextafter (it steps the compute type's own lattice, which an F32 expression evaluated at double would not)",
+                        ));
                     }
                 }
                 let cmp = |o: &str| format!("(({x}) {o} ({y}) ? ({c})1 : ({c})0)");
@@ -869,6 +904,11 @@ fn unary_kind(op: &UnaryOp) -> Option<UnaryKind> {
 /// which leave the sign of a zero result unspecified for `(-0, +0)`: `Max`/`Min` move a NaN
 /// through, `FmaxIeee`/`FminIeee` suppress it, and on a tie the first operand wins.
 const HELPERS: &[(&str, &str)] = &[
+    (
+        "ocl_rem",
+        "inline REAL ocl_rem_S(REAL a, REAL b) { return a - floor(a / b) * b; }
+",
+    ),
     (
         "ocl_relu",
         "inline REAL ocl_relu_S(REAL x) { return x < 0 ? (REAL)0 : x; }
