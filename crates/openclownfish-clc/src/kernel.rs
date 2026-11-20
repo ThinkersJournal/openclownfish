@@ -20,11 +20,14 @@
 //! `F32` `Div` is declined in both modes: OpenCL C bounds float division at 2.5 ULP and NVIDIA's
 //! is 1 ULP off the oracle, even when the source divides at `double` (the compiler narrows it).
 //! Also spelled: float `Max`, `Min`, `FmaxIeee`, `FminIeee` (helpers that follow Unpopped's NaN and
-//! signed-zero rules), `Abs`, `Sqr` and `Select`, and the float `Sqrt`, `Exp`, `Log`, `Tanh`,
-//! `Sin` and `Cos` through the device's built-ins (NOT bit-exact: OpenCL allows several ULP, the
-//! device test states a tolerance per op). Declined by name: float atomics, a
-//! cast from a float, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a float division), `Erf`, `Gelu`,
-//! and `F16`/`Bf16`. `Div` relies on
+//! signed-zero rules), `Abs`, `Sqr` and `Select`; the exact float `Floor`, `Ceil`, `Trunc`,
+//! `Round` (ties to even), `Relu`, `Sign` and `Step` (bit for bit); and the float `Sqrt`, `Exp`,
+//! `Log`, `Tanh`, `Sin`, `Cos`, `Exp2`, `Expm1`, `Log2`, `Log10`, `Log1p`, `Sinh`, `Cosh`, `Tan`,
+//! `Asin`, `Acos`, `Atan`, `Asinh`, `Acosh`, `Atanh` and `Cbrt` through the device's built-ins
+//! (NOT bit-exact: OpenCL allows several ULP, the device test states a tolerance per op).
+//! Declined by name: float atomics, a cast from a float, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
+//! float division), `Erf`, `Erfc`, `Gelu`, `Lgamma`, an `F64` `Atanh` (the oracle's is
+//! inaccurate near -1), and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
 //! rounding; the device test checks it bit for bit on every device here.
 //!
@@ -218,20 +221,12 @@ impl Em<'_> {
                     Err(refuse("an Abs or Sqr of a non-float"))
                 }
             }
-            ScalarExpr::Unary(
-                UnaryOp::Sqrt
-                | UnaryOp::Exp
-                | UnaryOp::Log
-                | UnaryOp::Tanh
-                | UnaryOp::Sin
-                | UnaryOp::Cos,
-                x,
-            ) => {
+            ScalarExpr::Unary(op, x) if unary_kind(op).is_some() => {
                 let x = self.ty(x)?;
                 if is_float(x) {
                     Ok(x)
                 } else {
-                    Err(refuse("a transcendental op of a non-float"))
+                    Err(refuse("a float unary op of a non-float"))
                 }
             }
             ScalarExpr::Select(c, a, b) => {
@@ -300,16 +295,11 @@ impl Em<'_> {
             }
             // A square rounds once, like a multiply; `Abs` and `Neg` only change a sign bit.
             ScalarExpr::Unary(UnaryOp::Sqr, x) => usize::from(is32(e)) + self.f32_roundings(x),
-            // A device built-in rounds once (within its own ULP bound, not the oracle's).
-            ScalarExpr::Unary(
-                UnaryOp::Sqrt
-                | UnaryOp::Exp
-                | UnaryOp::Log
-                | UnaryOp::Tanh
-                | UnaryOp::Sin
-                | UnaryOp::Cos,
-                x,
-            ) => usize::from(is32(e)) + self.f32_roundings(x),
+            // A device built-in rounds once (within its own ULP bound, not the oracle's); the
+            // exact ones (floor, relu, ...) do not round.
+            ScalarExpr::Unary(op, x) if matches!(unary_kind(op), Some(UnaryKind::Rounded(_))) => {
+                usize::from(is32(e)) + self.f32_roundings(x)
+            }
             ScalarExpr::Unary(_, x) | ScalarExpr::Cast(x, _) => self.f32_roundings(x),
             // The chosen arm is moved, not computed on; the condition is counted too, because
             // its own rounding decides which arm is chosen.
@@ -389,27 +379,25 @@ impl Em<'_> {
                 let t = self.ty(e)?;
                 format!("{}({})", self.helper("ocl_sqr", t), self.expr(x)?)
             }
-            // The OpenCL C built-in of the evaluation type (`double` when wide). Not bit-exact:
-            // the spec allows several ULP, so the device test states a tolerance per op.
-            ScalarExpr::Unary(
-                op @ (UnaryOp::Sqrt
-                | UnaryOp::Exp
-                | UnaryOp::Log
-                | UnaryOp::Tanh
-                | UnaryOp::Sin
-                | UnaryOp::Cos),
-                x,
-            ) => {
-                self.ty(e)?;
-                let f = match op {
-                    UnaryOp::Sqrt => "sqrt",
-                    UnaryOp::Exp => "exp",
-                    UnaryOp::Log => "log",
-                    UnaryOp::Tanh => "tanh",
-                    UnaryOp::Sin => "sin",
-                    _ => "cos",
-                };
-                format!("{f}({})", self.expr(x)?)
+            // The OpenCL C built-in of the evaluation type (`double` when wide). The `Rounded`
+            // ones are not bit-exact (the spec allows several ULP, so the device test states a
+            // tolerance per op); the `Exact` ones and the helpers are bit for bit.
+            ScalarExpr::Unary(op, x) if unary_kind(op).is_some() => {
+                let t = self.ty(e)?;
+                if matches!(op, UnaryOp::Atanh) && t == ElementKind::F64 {
+                    // The oracle's `f64::atanh` is `0.5 * ln_1p(2x / (1 - x))`, which loses
+                    // accuracy near -1 (measured 1172 ULP off libm), so no device can agree with
+                    // it to a stated bound; at F32 the final rounding hides it.
+                    return Err(refuse(
+                        "an F64 Atanh (the oracle's atanh is inaccurate near -1)",
+                    ));
+                }
+                let inner = self.expr(x)?;
+                match unary_kind(op) {
+                    Some(UnaryKind::Rounded(f) | UnaryKind::Exact(f)) => format!("{f}({inner})"),
+                    Some(UnaryKind::Helper(h)) => format!("{}({inner})", self.helper(h, t)),
+                    None => unreachable!("guarded"),
+                }
             }
             // The condition is tested `!= 0`: NaN is true and -0.0 is false, as in the oracle.
             // The chosen arm is moved, not computed on.
@@ -828,11 +816,74 @@ fn stmt_name(s: &Stmt) -> &'static str {
     }
 }
 
+/// How a float unary op is spelled: an OpenCL built-in that rounds once (within its own ULP
+/// bound), one that is exact on every input, or a helper function.
+#[derive(Clone, Copy)]
+enum UnaryKind {
+    Rounded(&'static str),
+    Exact(&'static str),
+    Helper(&'static str),
+}
+
+/// The spelling of a float unary op, `None` for the ones declined (`Recip`, `Rsqrt`, `Sigmoid`,
+/// `Silu`, `Erf`, `Erfc`, `Gelu`, `Lgamma`: a float division, or an erf/gamma whose oracle
+/// accuracy is unchecked).
+fn unary_kind(op: &UnaryOp) -> Option<UnaryKind> {
+    use UnaryKind::{Exact, Helper, Rounded};
+    Some(match op {
+        UnaryOp::Sqrt => Rounded("sqrt"),
+        UnaryOp::Exp => Rounded("exp"),
+        UnaryOp::Log => Rounded("log"),
+        UnaryOp::Tanh => Rounded("tanh"),
+        UnaryOp::Sin => Rounded("sin"),
+        UnaryOp::Cos => Rounded("cos"),
+        UnaryOp::Exp2 => Rounded("exp2"),
+        UnaryOp::Expm1 => Rounded("expm1"),
+        UnaryOp::Log2 => Rounded("log2"),
+        UnaryOp::Log10 => Rounded("log10"),
+        UnaryOp::Log1p => Rounded("log1p"),
+        UnaryOp::Sinh => Rounded("sinh"),
+        UnaryOp::Cosh => Rounded("cosh"),
+        UnaryOp::Tan => Rounded("tan"),
+        UnaryOp::Asin => Rounded("asin"),
+        UnaryOp::Acos => Rounded("acos"),
+        UnaryOp::Atan => Rounded("atan"),
+        UnaryOp::Asinh => Rounded("asinh"),
+        UnaryOp::Acosh => Rounded("acosh"),
+        UnaryOp::Atanh => Rounded("atanh"),
+        UnaryOp::Cbrt => Rounded("cbrt"),
+        UnaryOp::Floor => Exact("floor"),
+        UnaryOp::Ceil => Exact("ceil"),
+        UnaryOp::Trunc => Exact("trunc"),
+        // Round to nearest, ties to even (the default rounding mode), as the oracle does.
+        UnaryOp::Round => Exact("rint"),
+        UnaryOp::Relu => Helper("ocl_relu"),
+        UnaryOp::Sign => Helper("ocl_sign"),
+        UnaryOp::Step => Helper("ocl_step"),
+        _ => return None,
+    })
+}
+
 /// Helper functions a kernel carries when its body calls them; `REAL` is `float` or `double` and
 /// `_S` is `_f` or `_d`. They follow Unpopped's normative reference, not OpenCL's `fmax`/`fmin`,
 /// which leave the sign of a zero result unspecified for `(-0, +0)`: `Max`/`Min` move a NaN
 /// through, `FmaxIeee`/`FminIeee` suppress it, and on a tie the first operand wins.
 const HELPERS: &[(&str, &str)] = &[
+    (
+        "ocl_relu",
+        "inline REAL ocl_relu_S(REAL x) { return x < 0 ? (REAL)0 : x; }
+",
+    ),
+    (
+        "ocl_sign",
+        "inline REAL ocl_sign_S(REAL x) { return x > 0 ? (REAL)1 : (x < 0 ? (REAL)-1 : (REAL)0); }
+",
+    ),
+    (
+        "ocl_step",
+        "inline REAL ocl_step_S(REAL x) { return x > 0 ? (REAL)1 : (REAL)0; }
+",
+    ),
     (
         "ocl_sqr",
         "inline REAL ocl_sqr_S(REAL x) { return x * x; }

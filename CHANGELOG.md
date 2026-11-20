@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-11-20
+
+- Emitter: `lower_kernel` spells more float unary ops, all declined by name before. Exact (bit for bit, no rounding): `Floor`, `Ceil`, `Trunc`, `Round` (ties to even, `rint`), `Relu` (NaN-propagating, -0 kept), `Sign`, `Step`. Through the device built-ins with stated OpenCL ULP limits: `Exp2`, `Expm1`, `Log2`, `Log10`, `Log1p`, `Sinh`, `Cosh`, `Tan`, `Asin`, `Acos`, `Atan`, `Asinh`, `Acosh`, `Atanh`, `Cbrt` (limits 2 to 5; with `with_fp64` an F32 kernel is within 1 ULP of f32). Still declined by name: `Recip`, `Rsqrt`, `Sigmoid`, `Silu`, `Erf`, `Erfc`, `Gelu`, `Lgamma`, and an F64 `Atanh` (the oracle's `f64::atanh` is 1172 ULP off libm near -1, measured, so no device can agree with it to a bound).
+- Tests: `tests/device_agrees_float_transcendental.rs` now 249 checks on the 3 laptop devices over two input ranges (one inside the domain of `asin`, `acos`, `atanh`); a mutant spelling `Floor` as `ceil` fails it. Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
+- Docs: ROADMAP X2 records the kernel-IR float ops.
+
 ## 0.2.1
 
 - Emitter: `lower_kernel` spells float `Max`, `Min`, `FmaxIeee` and `FminIeee` (helper functions that follow Unpopped's rules, not OpenCL's `fmax`/`fmin`: `Max`/`Min` move a NaN through, the `Ieee` pair suppress it, and a tie takes the first operand), float `Abs` and `Sqr`, and `Select` (condition tested `!= 0`: NaN true, -0 false). Before, a float `Max`/`Min` and `Select` were declined by name. Float `Sqrt`, `Exp`, `Log`, `Tanh`, `Sin` and `Cos` are spelled through the device's built-ins (before, declined by name): not bit-exact, so the test states OpenCL's per-op ULP maxima (F32: sqrt/exp/log 3, tanh 5, sin/cos 4; with `with_fp64`, computed at `double` and rounded once, 1 ULP; F64: sqrt 0, exp/log 3, tanh 5, sin/cos 4); measured worst on the 3 laptop devices was 2 ULP. `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a float division) and `Erf`, `Gelu` stay declined by name. Test: `tests/device_agrees_float_transcendental.rs`, 54 checks; a mutant spelling `Sin` as `cos` fails it.
