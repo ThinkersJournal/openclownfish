@@ -32,8 +32,7 @@
 //! one; `NearestAway` (but for `F32` to `F64`) is declined.
 //! A float-to-integer `Cast` (`Clamp`, any rounding mode, NaN to 0; to `I32`, `U32`, `I64`,
 //! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
-//! float division), `Erf`, `Erfc`, `Gelu`, `Lgamma`, an `F64` `Atanh` (the oracle's is
-//! inaccurate near -1), and `F16`/`Bf16`. `Div` relies on
+//! float division), `Erf`, `Erfc`, `Gelu`, `Lgamma`, and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
 //! rounding; the device test checks it bit for bit on every device here.
 //!
@@ -420,14 +419,6 @@ impl Em<'_> {
             // tolerance per op); the `Exact` ones and the helpers are bit for bit.
             ScalarExpr::Unary(op, x) if unary_kind(op).is_some() => {
                 let t = self.ty(e)?;
-                if matches!(op, UnaryOp::Atanh) && t == ElementKind::F64 {
-                    // The oracle's `f64::atanh` is `0.5 * ln_1p(2x / (1 - x))`, which loses
-                    // accuracy near -1 (measured 1172 ULP off libm), so no device can agree with
-                    // it to a stated bound; at F32 the final rounding hides it.
-                    return Err(refuse(
-                        "an F64 Atanh (the oracle's atanh is inaccurate near -1)",
-                    ));
-                }
                 let inner = self.expr(x)?;
                 match unary_kind(op) {
                     Some(UnaryKind::Rounded(f) | UnaryKind::Exact(f)) => format!("{f}({inner})"),

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (pm-assist allocates the number at the gate)
+- Dependencies: Unpopped, `unpopped-vocab` and `unpopped-convert` 0.56.2 -> 0.56.5 (pm-kernels TASK 2026-11-21).
+- Emitter: an `F64` `Atanh` is spelled again (`atanh`). Unpopped's oracle fix for it is in 0.56.5; measured against the Unpopped 0.56.5 oracle on the 3 laptop devices (NVIDIA RTX 4070 Laptop, AMD gfx1036, Intel OpenCL on a Ryzen 9 7940HX) it is within a 5 ULP limit, the same limit `Atanh` already had at F32 and the largest of the built-in limits (2 to 5) of the other lifted transcendentals; pass/fail against that limit only, not a tighter measurement (`tests/device_agrees_float_transcendental.rs`, no `F64` skip any more); the decline of 0.2.2 is lifted and its by-name test removed.
+
 ## 0.2.3 - 2026-11-21 (allocated by pm-assist)
 
 - Emitter: `lower_kernel` spells more float unary ops, all declined by name before. Exact (bit for bit, no rounding): `Floor`, `Ceil`, `Trunc`, `Round` (ties to even, `rint`), `Relu` (NaN-propagating, -0 kept), `Sign`, `Step`. Through the device built-ins with stated OpenCL ULP limits: `Exp2`, `Expm1`, `Log2`, `Log10`, `Log1p`, `Sinh`, `Cosh`, `Tan`, `Asin`, `Acos`, `Atan`, `Asinh`, `Acosh`, `Atanh`, `Cbrt` (limits 2 to 5; with `with_fp64` an F32 kernel is within 1 ULP of f32). Still declined by name: `Recip`, `Rsqrt`, `Sigmoid`, `Silu`, `Erf`, `Erfc`, `Gelu`, `Lgamma`, and an F64 `Atanh` (the oracle's `f64::atanh` is 1172 ULP off libm near -1, measured, so no device can agree with it to a bound).
