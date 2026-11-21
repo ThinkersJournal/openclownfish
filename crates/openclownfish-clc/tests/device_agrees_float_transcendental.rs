@@ -194,6 +194,10 @@ fn ops(e: ElementKind, wide: bool) -> Vec<(&'static str, UnaryOp, u64)> {
         ("e_sign", Sign, 0),
         ("e_step", Step, 0),
     ];
+    // `1.0 / x` is correctly rounded at F64 (bit for bit); F32 Recip is declined with F32 Div.
+    if e == ElementKind::F64 {
+        v.push(("e_recip", Recip, 0));
+    }
     // The OpenCL C 1.2 maxima for `float` and `double` (identical for these ops except `sqrt`).
     let table: [(&'static str, UnaryOp, u64); 23] = [
         ("t_sqrt", Sqrt, if e == ElementKind::F32 { 3 } else { 0 }),

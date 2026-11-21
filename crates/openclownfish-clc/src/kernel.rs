@@ -31,7 +31,7 @@
 //! is spelled with `convert_float_*`/`convert_double_*`, as is an `F64`-to-`F32` cast and an exact `F32`-to-`F64`
 //! one; `NearestAway` (but for `F32` to `F64`) is declined.
 //! A float-to-integer `Cast` (`Clamp`, any rounding mode, NaN to 0; to `I32`, `U32`, `I64`,
-//! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
+//! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, an `F32` `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
 //! float division), `Gelu`, `Lgamma` (the oracle's is NaN at `+inf`, the device's is `inf`), an `F64` `Atanh` (the oracle's is
 //! inaccurate near -1), and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
@@ -219,7 +219,7 @@ impl Em<'_> {
                     Err(refuse("a Neg of a non-float"))
                 }
             }
-            ScalarExpr::Unary(UnaryOp::Abs | UnaryOp::Sqr, x) => {
+            ScalarExpr::Unary(UnaryOp::Abs | UnaryOp::Sqr | UnaryOp::Recip, x) => {
                 let x = self.ty(x)?;
                 if is_float(x) {
                     Ok(x)
@@ -414,6 +414,16 @@ impl Em<'_> {
             ScalarExpr::Unary(UnaryOp::Sqr, x) => {
                 let t = self.ty(e)?;
                 format!("{}({})", self.helper("ocl_sqr", t), self.expr(x)?)
+            }
+            // `1.0 / x` at F64 is correctly rounded on the device and in the oracle; at F32 it
+            // is the declined float division.
+            ScalarExpr::Unary(UnaryOp::Recip, x) => {
+                if self.ty(e)? == ElementKind::F32 {
+                    return Err(refuse(
+                        "an F32 Recip (the device's float division is not correctly rounded)",
+                    ));
+                }
+                format!("(1.0 / ({}))", self.expr(x)?)
             }
             // The OpenCL C built-in of the evaluation type (`double` when wide). The `Rounded`
             // ones are not bit-exact (the spec allows several ULP, so the device test states a
@@ -925,7 +935,7 @@ enum UnaryKind {
     Helper(&'static str),
 }
 
-/// The spelling of a float unary op, `None` for the ones declined (`Recip`, `Rsqrt`, `Sigmoid`,
+/// The spelling of a float unary op, `None` for the ones declined (`Rsqrt`, `Sigmoid`,
 /// `Silu`, `Gelu`, `Lgamma`: a float division, or an erf/gamma whose oracle disagrees with the
 /// device: `Lgamma(+inf)` is NaN in the oracle, `inf` on the device).
 fn unary_kind(op: &UnaryOp) -> Option<UnaryKind> {

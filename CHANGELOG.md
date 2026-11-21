@@ -6,6 +6,7 @@
 
 ## Unreleased (pm-assist allocates the number at the gate)
 
+- Emitter: `lower_kernel` spells an `F64` `Recip` as `1.0 / x`, bit for bit (F64 division is correctly rounded on the device and in the oracle). An `F32` `Recip` stays declined with `F32` `Div`. Test: `e_recip` in `tests/device_agrees_float_transcendental.rs` (267 to 270 checks on 3 devices).
 - Emitter: `lower_kernel` spells float `Erf` and `Erfc` through the device built-ins (declined by name before). Stated limit 16 ULP (OpenCL's maximum for both); measured worst 3 ULP on the 3 laptop devices (NVIDIA RTX 4070 Laptop, AMD gfx1036, Intel OpenCL on a Ryzen 9 7940HX), F32, F32 under `with_fp64` (0 ULP) and F64. `Lgamma` stays declined by name: Unpopped's oracle returns NaN at `+inf` where the device (and C `lgamma`) return `inf`; reported to pm-kernels. `Gelu` and the division ops are unchanged. Tests: `tests/device_agrees_float_transcendental.rs` now 267 checks; a mutant spelling `Erf` as `erfc` fails it (2139095040 ULP against the limit 16). Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
 
 ## 0.2.3 - 2026-11-21 (allocated by pm-assist)
