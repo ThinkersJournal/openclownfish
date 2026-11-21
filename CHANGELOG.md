@@ -1,10 +1,18 @@
 # Changelog
 
-## 0.2.2 - 2026-11-20
+## 0.2.3 - 2026-11-21 (allocated by pm-assist)
 
 - Emitter: `lower_kernel` spells more float unary ops, all declined by name before. Exact (bit for bit, no rounding): `Floor`, `Ceil`, `Trunc`, `Round` (ties to even, `rint`), `Relu` (NaN-propagating, -0 kept), `Sign`, `Step`. Through the device built-ins with stated OpenCL ULP limits: `Exp2`, `Expm1`, `Log2`, `Log10`, `Log1p`, `Sinh`, `Cosh`, `Tan`, `Asin`, `Acos`, `Atan`, `Asinh`, `Acosh`, `Atanh`, `Cbrt` (limits 2 to 5; with `with_fp64` an F32 kernel is within 1 ULP of f32). Still declined by name: `Recip`, `Rsqrt`, `Sigmoid`, `Silu`, `Erf`, `Erfc`, `Gelu`, `Lgamma`, and an F64 `Atanh` (the oracle's `f64::atanh` is 1172 ULP off libm near -1, measured, so no device can agree with it to a bound).
 - Tests: `tests/device_agrees_float_transcendental.rs` now 249 checks on the 3 laptop devices over two input ranges (one inside the domain of `asin`, `acos`, `atanh`); a mutant spelling `Floor` as `ceil` fails it. Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
 - Docs: ROADMAP X2 records the kernel-IR float ops.
+
+## 0.2.2 - 2026-11-20
+
+- Emitter: `lower_kernel` spells the float binary ops `Copysign` and `RemTrunc` (`fmod`) bit for bit (the sign of a zero included), `Pow` and `Atan2` through the device built-ins within OpenCL's ULP maxima (`pow` 16, `atan2` 6; 1 ULP of f32 when an F32 kernel computes at `double` under `with_fp64`; measured worst 2 ULP on the 3 laptop devices), and the floored `Rem` (`a - floor(a / b) * b`) for F64 only. Declined by name: a float `Nextafter` (it steps the compute type's own lattice) and an F32 `Rem` (it divides, and the device's float division is not correctly rounded).
+- Emitter: `lower_kernel` spells a float-to-integer `Cast` (`Clamp`, every rounding mode, NaN to 0, to `I32`, `U32`, `I64`, `U64`): the mode's built-in (`rint`, `trunc`, `floor`, `ceil`, `round`) then a clamping helper, so no out-of-range float-to-integer conversion is executed. Test: `tests/device_agrees_float_cast.rs`, 180 checks bit for bit on the 3 laptop devices (every tie, both zeros, NaN, both infinities, values past each destination's range); a mutant spelling `NearestEven` as `round` fails it. A float cast that is not `Clamp` is already ill-formed in Unpopped.
+- Emitter: `lower_kernel` spells an integer-to-float `Cast` (`Wrap`; from `I32`, `U32`, `I64`, `U64` to `F32` and `F64`; `NearestEven`, `TowardZero`, `TowardNegInf`, `TowardPosInf`) as `convert_float_*` / `convert_double_*` with the mode's suffix. `NearestAway` has no OpenCL conversion and is declined by name; a float-to-float cast is declined. Test: `tests/device_agrees_int_to_float_cast.rs`, 144 checks bit for bit on the 3 laptop devices (values around 2^24 and 2^53 with exact ties, both extremes of each source); a mutant spelling `rte` as `rtz` fails it.
+- Emitter: `lower_kernel` spells an `F64`-to-`F32` `Cast` (four rounding modes, `convert_float_*`) and an exact `F32`-to-`F64` one. Test: `tests/device_agrees_float_to_float_cast.rs`, 15 checks bit for bit (NaN equals NaN) on the 3 laptop devices (f32 ties, overflow, subnormals, both zeros, infinities); a mutant spelling nearest-even as toward-zero fails it. `NearestAway` into `F32` stays declined by name.
+- Tests: `tests/device_agrees_float_binary.rs`, 39 checks on the 3 laptop devices over two input ranges with NaN, both infinities and both zeros; a mutant spelling `Copysign` as `hypot` fails it. The exact ops in this file and in `device_agrees_float_transcendental.rs` are now compared bit for bit including the sign of zero (the ULP distance cannot tell `-0` from `+0`); all still pass. Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
 
 ## 0.2.1
 
