@@ -195,7 +195,7 @@ fn ops(e: ElementKind, wide: bool) -> Vec<(&'static str, UnaryOp, u64)> {
         ("e_step", Step, 0),
     ];
     // The OpenCL C 1.2 maxima for `float` and `double` (identical for these ops except `sqrt`).
-    let table: [(&'static str, UnaryOp, u64); 21] = [
+    let table: [(&'static str, UnaryOp, u64); 23] = [
         ("t_sqrt", Sqrt, if e == ElementKind::F32 { 3 } else { 0 }),
         ("t_exp", Exp, 3),
         ("t_log", Log, 3),
@@ -217,6 +217,8 @@ fn ops(e: ElementKind, wide: bool) -> Vec<(&'static str, UnaryOp, u64)> {
         ("t_acosh", Acosh, 4),
         ("t_atanh", Atanh, 5),
         ("t_cbrt", Cbrt, 4),
+        ("t_erf", Erf, 16),
+        ("t_erfc", Erfc, 16),
     ];
     for (n, op, tol) in table {
         // Evaluated at double and rounded once to f32: within 1 ULP of f32.
@@ -344,16 +346,14 @@ fn transcendentals_agree_within_their_stated_ulps_on_every_device() {
     eprintln!("transcendentals: {checks} checks on {devices_run} devices");
 }
 
-/// The ops this emitter declines by name still say so (a float division or an erf).
+/// The ops this emitter declines by name still say so (a float division, or Lgamma: the oracle's differs from the device at +inf).
 #[test]
-fn recip_rsqrt_sigmoid_silu_erf_gelu_are_declined_by_name() {
+fn recip_rsqrt_sigmoid_silu_gelu_lgamma_are_declined_by_name() {
     for op in [
         UnaryOp::Recip,
         UnaryOp::Rsqrt,
         UnaryOp::Sigmoid,
         UnaryOp::Silu,
-        UnaryOp::Erf,
-        UnaryOp::Erfc,
         UnaryOp::Gelu,
         UnaryOp::Lgamma,
     ] {

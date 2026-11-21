@@ -32,7 +32,8 @@
 //! one; `NearestAway` (but for `F32` to `F64`) is declined.
 //! A float-to-integer `Cast` (`Clamp`, any rounding mode, NaN to 0; to `I32`, `U32`, `I64`,
 //! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
-//! float division), `Erf`, `Erfc`, `Gelu`, `Lgamma`, and `F16`/`Bf16`. `Div` relies on
+//! float division), `Gelu`, `Lgamma` (the oracle's is NaN at `+inf`, the device's is `inf`), an `F64` `Atanh` (the oracle's is
+//! inaccurate near -1), and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
 //! rounding; the device test checks it bit for bit on every device here.
 //!
@@ -925,8 +926,8 @@ enum UnaryKind {
 }
 
 /// The spelling of a float unary op, `None` for the ones declined (`Recip`, `Rsqrt`, `Sigmoid`,
-/// `Silu`, `Erf`, `Erfc`, `Gelu`, `Lgamma`: a float division, or an erf/gamma whose oracle
-/// accuracy is unchecked).
+/// `Silu`, `Gelu`, `Lgamma`: a float division, or an erf/gamma whose oracle disagrees with the
+/// device: `Lgamma(+inf)` is NaN in the oracle, `inf` on the device).
 fn unary_kind(op: &UnaryOp) -> Option<UnaryKind> {
     use UnaryKind::{Exact, Helper, Rounded};
     Some(match op {
@@ -951,6 +952,8 @@ fn unary_kind(op: &UnaryOp) -> Option<UnaryKind> {
         UnaryOp::Acosh => Rounded("acosh"),
         UnaryOp::Atanh => Rounded("atanh"),
         UnaryOp::Cbrt => Rounded("cbrt"),
+        UnaryOp::Erf => Rounded("erf"),
+        UnaryOp::Erfc => Rounded("erfc"),
         UnaryOp::Floor => Exact("floor"),
         UnaryOp::Ceil => Exact("ceil"),
         UnaryOp::Trunc => Exact("trunc"),
