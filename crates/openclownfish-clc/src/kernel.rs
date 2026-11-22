@@ -32,7 +32,7 @@
 //! one; `NearestAway` (but for `F32` to `F64`) is declined.
 //! A float-to-integer `Cast` (`Clamp`, any rounding mode, NaN to 0; to `I32`, `U32`, `I64`,
 //! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, an `F32` `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
-//! float division), `Gelu`, `Lgamma` (the oracle's is NaN at `+inf`, the device's is `inf`), and `F16`/`Bf16`. `Div` relies on
+//! float division; spelled at `F64` as `1.0 / ..`), `Gelu` at both widths (`1 + erf` cancels for negative `x`), `Lgamma` (the oracle's is NaN at `+inf`, the device's is `inf`), and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
 //! rounding; the device test checks it bit for bit on every device here.
 //!
@@ -218,7 +218,16 @@ impl Em<'_> {
                     Err(refuse("a Neg of a non-float"))
                 }
             }
-            ScalarExpr::Unary(UnaryOp::Abs | UnaryOp::Sqr | UnaryOp::Recip, x) => {
+            ScalarExpr::Unary(
+                UnaryOp::Abs
+                | UnaryOp::Sqr
+                | UnaryOp::Recip
+                | UnaryOp::Rsqrt
+                | UnaryOp::Sigmoid
+                | UnaryOp::Silu
+                | UnaryOp::Gelu,
+                x,
+            ) => {
                 let x = self.ty(x)?;
                 if is_float(x) {
                     Ok(x)
@@ -423,6 +432,36 @@ impl Em<'_> {
                     ));
                 }
                 format!("(1.0 / ({}))", self.expr(x)?)
+            }
+            // The oracle's own formulas at F64, where the division is correctly rounded; at F32
+            // each one is the declined float division. The device's `sqrt` is exact, `exp` and
+            // `erf` are within their stated ULPs, so the device test states a tolerance for them.
+            ScalarExpr::Unary(
+                op @ (UnaryOp::Rsqrt | UnaryOp::Sigmoid | UnaryOp::Silu | UnaryOp::Gelu),
+                x,
+            ) => {
+                if *op == UnaryOp::Gelu {
+                    // `1 + erf(x / sqrt 2)` cancels for negative x: the device's erf error is
+                    // magnified without bound (7906 ULP measured on NVIDIA at F64).
+                    return Err(refuse(
+                        "a Gelu (1 + erf cancels for negative x, so no ULP limit holds)",
+                    ));
+                }
+                if self.ty(e)? == ElementKind::F32 {
+                    return Err(refuse(format!(
+                        "an F32 {op:?} (the device's float division is not correctly rounded)"
+                    )));
+                }
+                let x = self.expr(x)?;
+                match op {
+                    UnaryOp::Rsqrt => format!("(1.0 / sqrt({x}))"),
+                    UnaryOp::Sigmoid => format!("(1.0 / (1.0 + exp(-({x}))))"),
+                    UnaryOp::Silu => format!("(({x}) * (1.0 / (1.0 + exp(-({x})))))"),
+                    _ => format!(
+                        "(0.5 * ({x}) * (1.0 + erf(({x}) * {:?})))",
+                        std::f64::consts::FRAC_1_SQRT_2
+                    ),
+                }
             }
             // The OpenCL C built-in of the evaluation type (`double` when wide). The `Rounded`
             // ones are not bit-exact (the spec allows several ULP, so the device test states a
@@ -934,9 +973,9 @@ enum UnaryKind {
     Helper(&'static str),
 }
 
-/// The spelling of a float unary op, `None` for the ones declined (`Rsqrt`, `Sigmoid`,
-/// `Silu`, `Gelu`, `Lgamma`: a float division, or an erf/gamma whose oracle disagrees with the
-/// device: `Lgamma(+inf)` is NaN in the oracle, `inf` on the device).
+/// The spelling of a float unary op, `None` for the ones declined or spelled elsewhere
+/// (`Recip`, `Rsqrt`, `Sigmoid`, `Silu`, `Gelu` have their own arms; `Lgamma` is declined: the
+/// oracle's `Lgamma(+inf)` is NaN, the device's is `inf`).
 fn unary_kind(op: &UnaryOp) -> Option<UnaryKind> {
     use UnaryKind::{Exact, Helper, Rounded};
     Some(match op {
