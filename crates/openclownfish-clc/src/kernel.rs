@@ -32,8 +32,7 @@
 //! one; `NearestAway` (but for `F32` to `F64`) is declined.
 //! A float-to-integer `Cast` (`Clamp`, any rounding mode, NaN to 0; to `I32`, `U32`, `I64`,
 //! `U64`) is spelled, bit for bit. Declined by name: float atomics, a float cast that is not `Clamp`, an `F32` `Recip`, `Rsqrt`, `Sigmoid`, `Silu` (a
-//! float division), `Gelu`, `Lgamma` (the oracle's is NaN at `+inf`, the device's is `inf`), an `F64` `Atanh` (the oracle's is
-//! inaccurate near -1), and `F16`/`Bf16`. `Div` relies on
+//! float division), `Gelu`, `Lgamma` (the oracle's is NaN at `+inf`, the device's is `inf`), and `F16`/`Bf16`. `Div` relies on
 //! the device's division, which OpenCL C bounds at 2.5 ULP rather than demanding correct
 //! rounding; the device test checks it bit for bit on every device here.
 //!
