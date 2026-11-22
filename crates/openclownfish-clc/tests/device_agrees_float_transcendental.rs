@@ -219,10 +219,6 @@ fn ops(e: ElementKind, wide: bool) -> Vec<(&'static str, UnaryOp, u64)> {
         ("t_cbrt", Cbrt, 4),
     ];
     for (n, op, tol) in table {
-        // The oracle's F64 atanh is inaccurate near -1 (1172 ULP off libm); declined, see below.
-        if op == Atanh && e == ElementKind::F64 {
-            continue;
-        }
         // Evaluated at double and rounded once to f32: within 1 ULP of f32.
         v.push((
             n,
@@ -371,15 +367,4 @@ fn recip_rsqrt_sigmoid_silu_erf_gelu_are_declined_by_name() {
             "{op:?}: {err}"
         );
     }
-}
-
-/// An F64 `Atanh` is declined by name: the oracle's own result is up to 1172 ULP off libm.
-#[test]
-fn f64_atanh_is_declined_by_name() {
-    let k = kernel("atanh64", ElementKind::F64, un(UnaryOp::Atanh));
-    let err = OpenClC::new()
-        .with_fp64(true)
-        .lower_kernel(&k)
-        .expect_err("declined");
-    assert!(format!("{err}").contains("F64 Atanh"), "{err}");
 }
