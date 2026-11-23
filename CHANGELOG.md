@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6 - 2026-11-23 (allocated by pm-assist)
+
+- Emitter: `lower_kernel` spells `F64` `Rsqrt` (`1.0 / sqrt(x)`, bit for bit), `Sigmoid` and `Silu` (`1.0 / (1.0 + exp(-x))`, limit 4 ULP) with the oracle's own formulas. `F32` stays declined (the device's float division). `Gelu` stays declined at both widths: `1 + erf(x / sqrt 2)` cancels for negative x, so the device's erf error is magnified without bound (7906 ULP measured on NVIDIA at F64). Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
+
 ## 0.2.4 - 2026-11-22 (allocated by pm-assist)
 - Dependencies: Unpopped, `unpopped-vocab` and `unpopped-convert` 0.56.2 -> 0.56.5 (pm-kernels TASK 2026-11-21).
 - Emitter: an `F64` `Atanh` is spelled again (`atanh`). Unpopped's oracle fix for it is in 0.56.5; measured against the Unpopped 0.56.5 oracle on the 3 laptop devices (NVIDIA RTX 4070 Laptop, AMD gfx1036, Intel OpenCL on a Ryzen 9 7940HX) it is within a 5 ULP limit, the same limit `Atanh` already had at F32 and the largest of the built-in limits (2 to 5) of the other lifted transcendentals; pass/fail against that limit only, not a tighter measurement (`tests/device_agrees_float_transcendental.rs`, no `F64` skip any more); the decline of 0.2.2 is lifted and its by-name test removed.

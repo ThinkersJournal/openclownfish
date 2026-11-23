@@ -197,6 +197,12 @@ fn ops(e: ElementKind, wide: bool) -> Vec<(&'static str, UnaryOp, u64)> {
     // `1.0 / x` is correctly rounded at F64 (bit for bit); F32 Recip is declined with F32 Div.
     if e == ElementKind::F64 {
         v.push(("e_recip", Recip, 0));
+        // `1.0 / sqrt(x)`: both steps correctly rounded, so bit for bit. Sigmoid and Silu carry
+        // `exp`, so they get a limit. Gelu stays declined: `1 + erf(x / sqrt 2)` cancels for
+        // negative x, so the device's erf error is magnified without bound (7906 ULP measured).
+        v.push(("e_rsqrt", Rsqrt, 0));
+        v.push(("t_sigmoid", Sigmoid, 4));
+        v.push(("t_silu", Silu, 4));
     }
     // The OpenCL C 1.2 maxima for `float` and `double` (identical for these ops except `sqrt`).
     let table: [(&'static str, UnaryOp, u64); 23] = [
@@ -350,18 +356,22 @@ fn transcendentals_agree_within_their_stated_ulps_on_every_device() {
     eprintln!("transcendentals: {checks} checks on {devices_run} devices");
 }
 
-/// The ops this emitter declines by name still say so (a float division, or Lgamma: the oracle's differs from the device at +inf).
+/// The ops this emitter declines by name still say so: a float division at F32, and Lgamma at
+/// both widths (the oracle's differs from the device at +inf).
 #[test]
-fn recip_rsqrt_sigmoid_silu_gelu_lgamma_are_declined_by_name() {
-    for op in [
-        UnaryOp::Recip,
-        UnaryOp::Rsqrt,
-        UnaryOp::Sigmoid,
-        UnaryOp::Silu,
-        UnaryOp::Gelu,
-        UnaryOp::Lgamma,
-    ] {
-        let k = kernel("declined", ElementKind::F32, un(op));
+fn f32_recip_rsqrt_sigmoid_silu_gelu_and_lgamma_are_declined_by_name() {
+    let cases = [
+        (UnaryOp::Recip, ElementKind::F32),
+        (UnaryOp::Rsqrt, ElementKind::F32),
+        (UnaryOp::Sigmoid, ElementKind::F32),
+        (UnaryOp::Silu, ElementKind::F32),
+        (UnaryOp::Gelu, ElementKind::F32),
+        (UnaryOp::Gelu, ElementKind::F64),
+        (UnaryOp::Lgamma, ElementKind::F32),
+        (UnaryOp::Lgamma, ElementKind::F64),
+    ];
+    for (op, e) in cases {
+        let k = kernel("declined", e, un(op));
         let err = OpenClC::new()
             .with_fp64(true)
             .lower_kernel(&k)
