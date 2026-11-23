@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (pm-assist allocates the number at the gate)
+## 0.2.6 - 2026-11-23 (allocated by pm-assist)
 
 - Emitter: `lower_kernel` spells `F64` `Rsqrt` (`1.0 / sqrt(x)`, bit for bit), `Sigmoid` and `Silu` (`1.0 / (1.0 + exp(-x))`, limit 4 ULP) with the oracle's own formulas. `F32` stays declined (the device's float division). `Gelu` stays declined at both widths: `1 + erf(x / sqrt 2)` cancels for negative x, so the device's erf error is magnified without bound (7906 ULP measured on NVIDIA at F64). Patent: no new search; plain arithmetic, none of the instructions ruled in `docs/PATENT-SWEEP.md`. Not a clearance.
 
