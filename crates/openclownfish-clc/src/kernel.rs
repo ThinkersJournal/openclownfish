@@ -810,6 +810,9 @@ impl Em<'_> {
             Stmt::Break => self.line("break;"),
             Stmt::Continue => self.line("continue;"),
             Stmt::Return => self.line("return;"),
+            // `Assume` is a value fact for the optimiser (Unpopped 0.64.0, U50): it changes no result,
+            // so it lowers to nothing. Emitting no code is sound; the emitter does not use the hint.
+            Stmt::Assume { .. } => {}
             Stmt::Barrier {
                 scope: Scope::Block,
                 kind: BarrierKind::Full,
@@ -1395,7 +1398,10 @@ mod tests {
     #[test]
     fn other_statements_are_not_swept_up() {
         // Control: the match is not "always Some".
-        for s in [Stmt::Break, Stmt::WgmmaCommit, Stmt::Return] {
+        let assume = Stmt::Assume {
+            cond: ScalarExpr::ConstInt(1, ElementKind::U32),
+        };
+        for s in [Stmt::Break, Stmt::WgmmaCommit, Stmt::Return, assume] {
             assert_eq!(patent_declined(&s), None, "{s:?}");
         }
     }
