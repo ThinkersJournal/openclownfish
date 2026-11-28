@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `openclownfish-clc` repins Unpopped 0.56.5 -> 0.64.0 and lowers the new `Stmt::Assume` (a value fact) to nothing. `OpenClC` implements `unpopped::backend::Backend`, so the pin is part of its API: Breaking by the portfolio rule (pm-assist allocates the number).
+
 ## 0.2.7 - 2026-11-25 (allocated by pm-assist)
 
 - CI only: the advisory `portfolio` job pins coderipper `467fd259` (CodeRipper 0.48.1), openclownfish#67.
